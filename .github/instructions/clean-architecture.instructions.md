@@ -1,0 +1,1 @@
+Keep modules small, composable, and testable. Respect existing boundaries: `api` for orchestration/state/config, `tools` for functional units, `vector_store` for storage abstractions, `ui` for Streamlit. Avoid leaking UI concerns into core modules. Use dependency injection where practical (pass models/stores into orchestrators).

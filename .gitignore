@@ -1,0 +1,12 @@
+__pycache__/
+.pytest_cache/
+.venv/
+venv/
+.DS_Store
+*.pyc
+*.pyo
+.idea/
+.vscode/
+data/
+chromadb/
+!data/sample_eval.json
