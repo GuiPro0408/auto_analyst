@@ -21,6 +21,7 @@ warnings.filterwarnings(
     "ignore",
     message="This package (`duckduckgo_search`) has been renamed to `ddgs`!",
     category=RuntimeWarning,
+    module="duckduckgo_search",
 )
 
 def search_duckduckgo(

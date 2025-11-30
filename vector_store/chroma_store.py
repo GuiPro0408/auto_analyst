@@ -5,40 +5,11 @@ from typing import List, Optional
 
 import chromadb
 from chromadb.config import Settings
+from chromadb.utils import embedding_functions
 
 from api.config import DATA_DIR
 from api.state import Chunk
-from tools.models import load_embedding_model
 from vector_store.base import ScoredChunk, VectorStore
-
-
-class SentenceTransformerEmbeddingFunction:
-    """Adapter so ChromaDB can call a sentence-transformers model."""
-
-    def __init__(self, model_name: str) -> None:
-        self.model_name = model_name
-        self.model = load_embedding_model(model_name=model_name)
-
-    def __call__(self, input: List[str]) -> List[List[float]]:  # noqa: A002 - match Chroma interface
-        return self.embed_documents(input)
-
-    def embed_documents(self, input: List[str]) -> List[List[float]]:
-        return self.model.encode(input, show_progress_bar=False).tolist()
-
-    def embed_query(self, input: str) -> List[float]:
-        return self.model.encode([input], show_progress_bar=False)[0].tolist()
-
-    # Chroma expects a name to detect embedding function changes across restarts
-    def name(self) -> str:  # pragma: no cover - trivial passthrough
-        return self.model_name
-
-    # Chroma legacy API compatibility flag
-    def is_legacy(self) -> bool:  # pragma: no cover - trivial passthrough
-        return False
-
-    @property
-    def supported_spaces(self) -> List[str]:  # pragma: no cover - trivial passthrough
-        return ["cosine"]
 
 
 class ChromaVectorStore(VectorStore):
@@ -53,11 +24,17 @@ class ChromaVectorStore(VectorStore):
 
         settings = Settings(is_persistent=True, persist_directory=str(persist_path))
         self.client = chromadb.Client(settings)
-        self.embedding_fn = SentenceTransformerEmbeddingFunction(model_name=model_name)
+        self.embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
+            model_name=model_name
+        )
         self.collection_name = collection_name
         self._create_collection()
 
     def _create_collection(self):
+        try:
+            self.client.delete_collection(self.collection_name)
+        except Exception:
+            pass
         self.collection = self.client.get_or_create_collection(
             name=self.collection_name,
             embedding_function=self.embedding_fn,
@@ -65,12 +42,6 @@ class ChromaVectorStore(VectorStore):
         )
 
     def clear(self) -> None:
-        # Drop and recreate collection to avoid invalid empty "where" filter errors.
-        try:
-            self.client.delete_collection(self.collection_name)
-        except Exception:
-            # If deletion fails, fall back to no-op to avoid crashing pipeline.
-            pass
         self._create_collection()
 
     def upsert(self, chunks: List[Chunk]) -> None:
@@ -91,11 +62,13 @@ class ChromaVectorStore(VectorStore):
         scored: List[ScoredChunk] = []
         if not results or not results.get("documents"):
             return scored
-        for idx, document in enumerate(results["documents"][0]):
-            metadata = results["metadatas"][0][idx]
-            distance = results["distances"][0][idx] if results.get("distances") else 0.0
+        for idx, document in enumerate(results.get("documents", [[]])[0]):
+            metadatas = results.get("metadatas", [[]])
+            distances = results.get("distances", [[]])
+            metadata = metadatas[0][idx] if metadatas and metadatas[0] else {}
+            distance = distances[0][idx] if distances and distances[0] else 0.0
             score = 1.0 - distance
             chunk_id = metadata.get("chunk_id") or f"chroma-{idx}"
-            chunk = Chunk(id=chunk_id, text=document, metadata=metadata)
+            chunk = Chunk(id=str(chunk_id), text=document, metadata=metadata or {})
             scored.append(ScoredChunk(chunk=chunk, score=score))
         return scored

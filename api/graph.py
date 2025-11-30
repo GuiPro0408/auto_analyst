@@ -1,7 +1,7 @@
 """LangGraph orchestration for the Auto-Analyst pipeline."""
 
 from time import perf_counter
-from typing import Dict, Optional
+from typing import Any, Optional, cast
 from uuid import uuid4
 
 from langgraph.graph import END, START, StateGraph
@@ -39,17 +39,18 @@ def build_workflow(
     llm = llm or load_llm()
     store = vector_store or build_vector_store(model_name=embed_model)
 
-    def plan_node(state: Dict):
+    def plan_node(state: GraphState) -> GraphState:
         log = get_logger("api.graph.plan", run_id=state.get("run_id"))
         start = perf_counter()
         try:
-            plan = plan_query(state["query"], llm=llm)
+            query_text = state.get("query", "")
+            plan = plan_query(query_text, llm=llm)
             log.info(
                 "plan_complete",
                 extra={
                     "tasks": len(plan),
                     "duration_ms": (perf_counter() - start) * 1000,
-                    "query": state["query"],
+                    "query": query_text,
                 },
             )
             return {"plan": plan}
@@ -59,11 +60,11 @@ def build_workflow(
             errors.append(f"plan_failed: {exc}")
             return {"plan": [], "errors": errors}
 
-    def search_node(state: Dict):
+    def search_node(state: GraphState) -> GraphState:
         log = get_logger("api.graph.search", run_id=state.get("run_id"))
         start = perf_counter()
         results, warnings = run_search_tasks(
-            state["plan"],
+            state.get("plan", []),
             max_results=5,
             searx_host=searx_host,
             run_id=state.get("run_id"),
@@ -79,7 +80,7 @@ def build_workflow(
         state_warnings.extend(warnings)
         return {"search_results": results, "warnings": state_warnings}
 
-    def fetch_node(state: Dict):
+    def fetch_node(state: GraphState) -> GraphState:
         log = get_logger("api.graph.fetch", run_id=state.get("run_id"))
         documents = []
         warnings = state.get("warnings", [])
@@ -100,7 +101,7 @@ def build_workflow(
         )
         return {"documents": documents, "warnings": warnings}
 
-    def chunk_node(state: Dict):
+    def chunk_node(state: GraphState) -> GraphState:
         log = get_logger("api.graph.chunk", run_id=state.get("run_id"))
         store.clear()
         chunks = chunk_documents(
@@ -113,9 +114,10 @@ def build_workflow(
             warnings.append("No chunks available; downstream answers may be empty.")
         return {"chunks": chunks, "warnings": warnings}
 
-    def retrieve_node(state: Dict):
+    def retrieve_node(state: GraphState) -> GraphState:
         log = get_logger("api.graph.retrieve", run_id=state.get("run_id"))
-        scored = store.query(state["query"], top_k=top_k)
+        query_text = state.get("query", "")
+        scored = store.query(query_text, top_k=top_k)
         retrieved = [sc.chunk for sc in scored]
         log.info(
             "retrieve_complete", extra={"retrieved": len(retrieved), "top_k": top_k}
@@ -125,7 +127,7 @@ def build_workflow(
             warnings.append("No retrieved context; answer may be unsupported.")
         return {"retrieved": retrieved, "warnings": warnings}
 
-    def adaptive_node(state: Dict):
+    def adaptive_node(state: GraphState) -> GraphState:
         log = get_logger("api.graph.adaptive", run_id=state.get("run_id"))
         warnings = state.get("warnings", [])
         adaptive_iterations = state.get("adaptive_iterations", 0)
@@ -138,7 +140,7 @@ def build_workflow(
                 "warnings": warnings,
                 "adaptive_iterations": adaptive_iterations,
             }
-        new_tasks = refine_plan(state["query"], state.get("plan", []))
+        new_tasks = refine_plan(state.get("query", ""), state.get("plan", []))
         plan = state.get("plan", []) + new_tasks
         results, search_warns = run_search_tasks(
             plan,
@@ -157,7 +159,8 @@ def build_workflow(
         store.clear()
         chunks = chunk_documents(documents, chunker, run_id=state.get("run_id"))
         store.upsert(chunks)
-        scored = store.query(state["query"], top_k=top_k)
+        query_text = state.get("query", "")
+        scored = store.query(query_text, top_k=top_k)
         retrieved = [sc.chunk for sc in scored]
         adaptive_iterations += 1
         log.info(
@@ -178,30 +181,30 @@ def build_workflow(
             "adaptive_iterations": adaptive_iterations,
         }
 
-    def generate_node(state: Dict):
+    def generate_node(state: GraphState) -> GraphState:
         log = get_logger("api.graph.generate", run_id=state.get("run_id"))
         answer, citations = generate_answer(
-            llm, state["query"], state.get("retrieved", [])
+            llm, state.get("query", ""), state.get("retrieved", [])
         )
         log.info("generate_complete", extra={"citations": len(citations)})
         return {"draft_answer": answer, "citations": citations}
 
-    def verify_node(state: Dict):
+    def verify_node(state: GraphState) -> GraphState:
         log = get_logger("api.graph.verify", run_id=state.get("run_id"))
         verified = verify_answer(
             llm,
             state.get("draft_answer", ""),
-            state["query"],
+            state.get("query", ""),
             state.get("retrieved", []),
         )
         log.info("verify_complete")
         return {"verified_answer": verified}
 
-    def qc_node(state: Dict):
+    def qc_node(state: GraphState) -> GraphState:
         log = get_logger("api.graph.qc", run_id=state.get("run_id"))
         qc_passes = state.get("qc_passes", 0)
         answer = state.get("verified_answer") or state.get("draft_answer", "")
-        assessment = assess_answer(state["query"], answer, state.get("retrieved", []))
+        assessment = assess_answer(state.get("query", ""), answer, state.get("retrieved", []))
         notes = state.get("qc_notes", [])
         notes.append(f"pass {qc_passes}: issues={assessment['issues']}")
         if assessment["is_good_enough"] or qc_passes >= QC_MAX_PASSES:
@@ -210,7 +213,7 @@ def build_workflow(
             )
             return {"qc_passes": qc_passes, "qc_notes": notes}
         improved = improve_answer(
-            llm, state["query"], answer, state.get("retrieved", [])
+            llm, state.get("query", ""), answer, state.get("retrieved", [])
         )
         qc_passes += 1
         log.info(
@@ -224,15 +227,15 @@ def build_workflow(
         }
 
     graph = StateGraph(GraphState)
-    graph.add_node("plan", plan_node)
-    graph.add_node("search", search_node)
-    graph.add_node("fetch", fetch_node)
-    graph.add_node("chunk", chunk_node)
-    graph.add_node("retrieve", retrieve_node)
-    graph.add_node("generate", generate_node)
-    graph.add_node("verify", verify_node)
-    graph.add_node("adaptive", adaptive_node)
-    graph.add_node("qc", qc_node)
+    graph.add_node("plan", lambda state: plan_node(cast(GraphState, state)))
+    graph.add_node("search", lambda state: search_node(cast(GraphState, state)))
+    graph.add_node("fetch", lambda state: fetch_node(cast(GraphState, state)))
+    graph.add_node("chunk", lambda state: chunk_node(cast(GraphState, state)))
+    graph.add_node("retrieve", lambda state: retrieve_node(cast(GraphState, state)))
+    graph.add_node("generate", lambda state: generate_node(cast(GraphState, state)))
+    graph.add_node("verify", lambda state: verify_node(cast(GraphState, state)))
+    graph.add_node("adaptive", lambda state: adaptive_node(cast(GraphState, state)))
+    graph.add_node("qc", lambda state: qc_node(cast(GraphState, state)))
 
     graph.add_edge(START, "plan")
     graph.add_edge("plan", "search")
@@ -285,7 +288,7 @@ def run_research(
         "qc_passes": 0,
         "qc_notes": [],
     }
-    result = workflow.invoke(initial_state)
+    result = workflow.invoke(cast(GraphState, initial_state))
     logger.info(
         "run_complete",
         extra={
