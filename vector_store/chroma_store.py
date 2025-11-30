@@ -20,7 +20,13 @@ class SentenceTransformerEmbeddingFunction:
         self.model = load_embedding_model(model_name=model_name)
 
     def __call__(self, input: List[str]) -> List[List[float]]:  # noqa: A002 - match Chroma interface
+        return self.embed_documents(input)
+
+    def embed_documents(self, input: List[str]) -> List[List[float]]:
         return self.model.encode(input, show_progress_bar=False).tolist()
+
+    def embed_query(self, input: str) -> List[float]:
+        return self.model.encode([input], show_progress_bar=False)[0].tolist()
 
     # Chroma expects a name to detect embedding function changes across restarts
     def name(self) -> str:  # pragma: no cover - trivial passthrough
@@ -29,6 +35,10 @@ class SentenceTransformerEmbeddingFunction:
     # Chroma legacy API compatibility flag
     def is_legacy(self) -> bool:  # pragma: no cover - trivial passthrough
         return False
+
+    @property
+    def supported_spaces(self) -> List[str]:  # pragma: no cover - trivial passthrough
+        return ["cosine"]
 
 
 class ChromaVectorStore(VectorStore):
@@ -76,16 +86,16 @@ class ChromaVectorStore(VectorStore):
         results = self.collection.query(
             query_texts=[text],
             n_results=top_k,
-            include=["documents", "metadatas", "distances", "ids"],
+            include=["documents", "metadatas", "distances"],
         )
         scored: List[ScoredChunk] = []
-        if not results or not results.get("ids"):
+        if not results or not results.get("documents"):
             return scored
-        for idx, chunk_id in enumerate(results["ids"][0]):
+        for idx, document in enumerate(results["documents"][0]):
             metadata = results["metadatas"][0][idx]
-            document = results["documents"][0][idx]
             distance = results["distances"][0][idx] if results.get("distances") else 0.0
             score = 1.0 - distance
+            chunk_id = metadata.get("chunk_id") or f"chroma-{idx}"
             chunk = Chunk(id=chunk_id, text=document, metadata=metadata)
             scored.append(ScoredChunk(chunk=chunk, score=score))
         return scored

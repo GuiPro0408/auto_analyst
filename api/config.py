@@ -5,7 +5,8 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-DEFAULT_LLM_MODEL = os.getenv("AUTO_ANALYST_LLM", "microsoft/Phi-3-mini-4k-instruct")
+# Default to a lighter-weight instruct model to reduce startup time.
+DEFAULT_LLM_MODEL = os.getenv("AUTO_ANALYST_LLM", "TinyLlama/TinyLlama-1.1B-Chat-v1.0")
 DEFAULT_EMBED_MODEL = os.getenv("AUTO_ANALYST_EMBED", "all-MiniLM-L6-v2")
 VECTOR_STORE_BACKEND = os.getenv("AUTO_ANALYST_VECTOR_STORE", "chroma")
 SEARCH_BACKENDS = os.getenv(

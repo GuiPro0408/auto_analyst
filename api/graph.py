@@ -49,6 +49,7 @@ def build_workflow(
                 extra={
                     "tasks": len(plan),
                     "duration_ms": (perf_counter() - start) * 1000,
+                    "query": state["query"],
                 },
             )
             return {"plan": plan}

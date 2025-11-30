@@ -1,6 +1,7 @@
 """Search tools using only free endpoints."""
 
 import time
+import warnings
 from typing import Iterable, List, Optional, Tuple
 
 import requests
@@ -15,6 +16,12 @@ from api.config import (
 from api.logging_setup import get_logger
 from api.state import SearchQuery, SearchResult
 
+# Suppress rename warning emitted by duckduckgo_search package
+warnings.filterwarnings(
+    "ignore",
+    message="This package (`duckduckgo_search`) has been renamed to `ddgs`!",
+    category=RuntimeWarning,
+)
 
 def search_duckduckgo(
     query: str, max_results: int = 5, run_id: Optional[str] = None
@@ -45,7 +52,7 @@ def search_duckduckgo(
                     extra={"attempt": attempt, "error": str(exc)},
                 )
                 time.sleep(SEARCH_RATE_LIMIT_SECONDS)
-    logger.info("duckduckgo_search_complete", extra={"results": len(results)})
+    logger.info("duckduckgo_search_complete", extra={"results": len(results), "query": query})
     return results
 
 
@@ -160,5 +167,5 @@ def run_search_tasks(
         },
     )
     if not deduped:
-        warnings.append("No search results found; consider refining the query.")
+            warnings.append("No search results found; consider refining the query.")
     return deduped, warnings

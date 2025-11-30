@@ -145,7 +145,7 @@ streamlit run ui/app.py  # http://localhost:8501
 
 | Variable                         | Default                            | Purpose                       |
 | -------------------------------- | ---------------------------------- | ----------------------------- |
-| `AUTO_ANALYST_LLM`               | `microsoft/Phi-3-mini-4k-instruct` | Instruct-tuned LLM            |
+| `AUTO_ANALYST_LLM`               | `TinyLlama/TinyLlama-1.1B-Chat-v1.0` | Instruct-tuned LLM (set to a heavier model if desired) |
 | `AUTO_ANALYST_EMBED`             | `all-MiniLM-L6-v2`                 | Embedding model               |
 | `AUTO_ANALYST_VECTOR_STORE`      | `chroma`                           | `chroma` or `faiss`           |
 | `AUTO_ANALYST_TOP_K`             | `6`                                | Retrieved chunks              |

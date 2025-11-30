@@ -3,6 +3,7 @@
 import re
 from typing import List, Optional
 
+from api.logging_setup import get_logger
 from api.state import SearchQuery
 
 
@@ -17,6 +18,7 @@ def _parse_lines(text: str) -> List[str]:
 
 def heuristic_plan(query: str, max_tasks: int = 4) -> List[SearchQuery]:
     """Fallback planner that derives keyword-based tasks."""
+    logger = get_logger(__name__)
     parts = re.split(r"[?.]", query)
     keywords = [p.strip() for p in parts if p.strip()]
     if not keywords:
@@ -29,11 +31,13 @@ def heuristic_plan(query: str, max_tasks: int = 4) -> List[SearchQuery]:
             else "Direct query expansion"
         )
         tasks.append(SearchQuery(text=text, rationale=rationale))
+    logger.info("planner_heuristic_complete", extra={"tasks": len(tasks), "max_tasks": max_tasks})
     return tasks
 
 
 def plan_query(query: str, llm=None, max_tasks: int = 4) -> List[SearchQuery]:
     """Use an instruct model (if provided) to plan; otherwise fall back to heuristics."""
+    logger = get_logger(__name__)
     if not llm:
         return heuristic_plan(query, max_tasks=max_tasks)
 
@@ -54,8 +58,10 @@ def plan_query(query: str, llm=None, max_tasks: int = 4) -> List[SearchQuery]:
                 q, rationale = line.strip(), "LLM derived search task"
             tasks.append(SearchQuery(text=q, rationale=rationale))
         if tasks:
+            logger.info("planner_llm_complete", extra={"tasks": len(tasks), "max_tasks": max_tasks})
             return tasks
     except Exception:
         # Swallow and fall back to heuristics; verification later can catch gaps.
         pass
+    logger.warning("planner_fallback_heuristic", extra={"max_tasks": max_tasks})
     return heuristic_plan(query, max_tasks=max_tasks)

@@ -76,5 +76,6 @@ class TextChunker:
                 "chunk_index": idx,
             }
             chunk_id = f"{uuid.uuid4()}"
+            metadata["chunk_id"] = chunk_id
             chunks.append(Chunk(id=chunk_id, text=text, metadata=metadata))
         return chunks
