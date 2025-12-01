@@ -41,14 +41,19 @@ def _check_memory_requirements(model_name: str) -> None:
     """Log a warning if available memory is below recommended threshold."""
     logger = get_logger(__name__)
 
-    # Only check for large models (Mistral, Llama, etc.)
-    large_model_patterns = ["mistral", "llama", "falcon", "mpt", "phi-3"]
-    is_large_model = any(
-        pattern in model_name.lower() for pattern in large_model_patterns
-    )
-
-    if not is_large_model:
-        return
+    # Model memory requirements (approximate, in GB)
+    # These are full precision weights; actual usage varies with batch size
+    MODEL_MEMORY_REQUIREMENTS = {
+        "qwen2.5-1.5b": 4,
+        "qwen2.5-0.5b": 2,
+        "qwen2.5-3b": 7,
+        "qwen2.5-7b": 16,
+        "gemma-2-2b": 6,
+        "phi-3-mini": 8,
+        "tinyllama": 3,
+        "mistral-7b": 16,
+        "llama-3.1-8b": 18,
+    }
 
     available_gb = _get_available_memory_gb()
     if available_gb < 0:
@@ -58,31 +63,47 @@ def _check_memory_requirements(model_name: str) -> None:
         )
         return
 
-    if available_gb < MIN_RECOMMENDED_MEMORY_GB:
+    # Determine required memory based on model name
+    model_lower = model_name.lower()
+    required_gb = MIN_RECOMMENDED_MEMORY_GB  # Default fallback
+
+    for pattern, mem_gb in MODEL_MEMORY_REQUIREMENTS.items():
+        if pattern in model_lower:
+            required_gb = mem_gb
+            break
+
+    if available_gb < required_gb:
+        # Suggest appropriate alternative based on available memory
+        if available_gb >= 6:
+            suggestion = "Qwen/Qwen2.5-1.5B-Instruct or google/gemma-2-2b-it"
+        elif available_gb >= 4:
+            suggestion = "Qwen/Qwen2.5-1.5B-Instruct or Qwen/Qwen2.5-0.5B-Instruct"
+        else:
+            suggestion = (
+                "Qwen/Qwen2.5-0.5B-Instruct or TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+            )
+
         logger.warning(
             "low_memory_warning",
             extra={
                 "available_gb": round(available_gb, 2),
-                "recommended_gb": MIN_RECOMMENDED_MEMORY_GB,
+                "required_gb": required_gb,
                 "model_name": model_name,
-                "suggestion": (
-                    f"Consider setting AUTO_ANALYST_LLM to a smaller model like "
-                    f"'TinyLlama/TinyLlama-1.1B-Chat-v1.0' or 'microsoft/phi-2'"
-                ),
+                "suggestion": f"Consider using: {suggestion}",
             },
         )
         print(
             f"\n⚠️  WARNING: Low memory detected ({available_gb:.1f}GB available, "
-            f"{MIN_RECOMMENDED_MEMORY_GB}GB recommended for {model_name}).\n"
-            f"   Consider using a smaller model by setting:\n"
-            f"   export AUTO_ANALYST_LLM='TinyLlama/TinyLlama-1.1B-Chat-v1.0'\n"
+            f"~{required_gb}GB needed for {model_name}).\n"
+            f"   Consider using a smaller model:\n"
+            f"   export AUTO_ANALYST_LLM='{suggestion.split(' or ')[0]}'\n"
         )
     else:
         logger.info(
             "memory_check_passed",
             extra={
                 "available_gb": round(available_gb, 2),
-                "recommended_gb": MIN_RECOMMENDED_MEMORY_GB,
+                "required_gb": required_gb,
                 "model_name": model_name,
             },
         )

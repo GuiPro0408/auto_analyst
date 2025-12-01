@@ -5,17 +5,19 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# Default to Mistral-7B-Instruct for better reasoning capabilities.
-# Users with limited memory can override via AUTO_ANALYST_LLM env var.
-DEFAULT_LLM_MODEL = os.getenv("AUTO_ANALYST_LLM", "mistralai/Mistral-7B-Instruct-v0.3")
+# Default to Qwen2.5-1.5B-Instruct - excellent instruction-following for RAG,
+# fits in ~4GB RAM (leaves room for embeddings + vector store).
+# Users can override via AUTO_ANALYST_LLM env var.
+DEFAULT_LLM_MODEL = os.getenv("AUTO_ANALYST_LLM", "Qwen/Qwen2.5-1.5B-Instruct")
 DEFAULT_EMBED_MODEL = os.getenv("AUTO_ANALYST_EMBED", "all-MiniLM-L6-v2")
 VECTOR_STORE_BACKEND = os.getenv("AUTO_ANALYST_VECTOR_STORE", "chroma")
 SEARCH_BACKENDS = os.getenv(
     "AUTO_ANALYST_SEARCH_BACKENDS", "duckduckgo,wikipedia"
 ).split(",")
 
-# Minimum memory (in GB) recommended for the default LLM model
-MIN_RECOMMENDED_MEMORY_GB = 16
+# Minimum memory (in GB) recommended for the default LLM model (Qwen2.5-1.5B)
+# Qwen2.5-1.5B needs ~4GB, add buffer for embeddings and vector store
+MIN_RECOMMENDED_MEMORY_GB = 6
 
 LOG_LEVEL = os.getenv("AUTO_ANALYST_LOG_LEVEL", "DEBUG")
 LOG_FORMAT = os.getenv("AUTO_ANALYST_LOG_FORMAT", "plain")  # plain|json
