@@ -13,7 +13,7 @@ SEARCH_BACKENDS = os.getenv(
     "AUTO_ANALYST_SEARCH_BACKENDS", "duckduckgo,wikipedia"
 ).split(",")
 
-LOG_LEVEL = os.getenv("AUTO_ANALYST_LOG_LEVEL", "INFO")
+LOG_LEVEL = os.getenv("AUTO_ANALYST_LOG_LEVEL", "DEBUG")
 LOG_FORMAT = os.getenv("AUTO_ANALYST_LOG_FORMAT", "plain")  # plain|json
 LOG_FILE_PATH = os.getenv("AUTO_ANALYST_LOG_FILE", "auto_analyst.log")
 SEARCH_RATE_LIMIT_SECONDS = float(os.getenv("AUTO_ANALYST_SEARCH_RATE_LIMIT", "1.0"))

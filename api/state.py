@@ -16,6 +16,7 @@ class SearchResult:
     title: str
     snippet: str = ""
     source: str = "web"
+    content: str = ""  # Pre-fetched content (e.g., Wikipedia summaries)
 
 
 @dataclass
