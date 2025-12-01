@@ -5,13 +5,17 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# Default to a lighter-weight instruct model to reduce startup time.
-DEFAULT_LLM_MODEL = os.getenv("AUTO_ANALYST_LLM", "TinyLlama/TinyLlama-1.1B-Chat-v1.0")
+# Default to Mistral-7B-Instruct for better reasoning capabilities.
+# Users with limited memory can override via AUTO_ANALYST_LLM env var.
+DEFAULT_LLM_MODEL = os.getenv("AUTO_ANALYST_LLM", "mistralai/Mistral-7B-Instruct-v0.3")
 DEFAULT_EMBED_MODEL = os.getenv("AUTO_ANALYST_EMBED", "all-MiniLM-L6-v2")
 VECTOR_STORE_BACKEND = os.getenv("AUTO_ANALYST_VECTOR_STORE", "chroma")
 SEARCH_BACKENDS = os.getenv(
     "AUTO_ANALYST_SEARCH_BACKENDS", "duckduckgo,wikipedia"
 ).split(",")
+
+# Minimum memory (in GB) recommended for the default LLM model
+MIN_RECOMMENDED_MEMORY_GB = 16
 
 LOG_LEVEL = os.getenv("AUTO_ANALYST_LOG_LEVEL", "DEBUG")
 LOG_FORMAT = os.getenv("AUTO_ANALYST_LOG_FORMAT", "plain")  # plain|json

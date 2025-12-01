@@ -97,7 +97,11 @@ def build_citations(chunks: List[Chunk]) -> List[Dict[str, str]]:
 
 
 def _extract_meaningful_words(text: str) -> set:
-    """Extract meaningful keywords from text, excluding stopwords."""
+    """Extract meaningful keywords from text, excluding stopwords.
+
+    Note: Temporal keywords (upcoming, new, latest, recent, current, next, coming)
+    are intentionally NOT filtered out to preserve time-sensitive query intent.
+    """
     stopwords = {
         "what",
         "which",
@@ -144,13 +148,6 @@ def _extract_meaningful_words(text: str) -> set:
         "has",
         "had",
         "having",
-        "next",
-        "upcoming",
-        "coming",
-        "new",
-        "latest",
-        "recent",
-        "current",
     }
     words = set(re.findall(r"\b[a-z]{3,}\b", text.lower()))
     return {w for w in words if w not in stopwords}

@@ -2,10 +2,40 @@
 
 import re
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from api.logging_setup import get_logger
 from api.state import SearchQuery
+
+
+# Temporal keywords that indicate time-sensitive queries
+TEMPORAL_KEYWORDS = {
+    "upcoming",
+    "coming",
+    "next",
+    "new",
+    "latest",
+    "recent",
+    "current",
+    "this season",
+    "this year",
+    "this month",
+    "this week",
+    "today",
+    "2024",
+    "2025",
+    "2026",  # Current and near years
+    "release",
+    "releases",
+    "premiere",
+    "premieres",
+    "launch",
+    "launches",
+    "announced",
+    "announcement",
+    "schedule",
+    "scheduled",
+}
 
 
 def _parse_lines(text: str) -> List[str]:
@@ -25,6 +55,22 @@ def _current_season(year: int, month: int) -> str:
     if month in (6, 7, 8):
         return "summer"
     return "fall"
+
+
+def detect_time_sensitive(query: str) -> Tuple[bool, List[str]]:
+    """Detect if a query is time-sensitive based on temporal keywords.
+
+    Returns:
+        Tuple of (is_time_sensitive, matched_keywords)
+    """
+    query_lower = query.lower()
+    matched = []
+
+    for keyword in TEMPORAL_KEYWORDS:
+        if keyword in query_lower:
+            matched.append(keyword)
+
+    return len(matched) > 0, matched
 
 
 def _extract_topic_keywords(query: str) -> List[str]:
@@ -124,12 +170,24 @@ def _extract_topic_keywords(query: str) -> List[str]:
     return keywords
 
 
-def heuristic_plan(query: str, max_tasks: int = 4) -> List[SearchQuery]:
-    """Fallback planner that derives keyword-based tasks."""
+def heuristic_plan(
+    query: str, max_tasks: int = 4, time_sensitive: bool = False
+) -> List[SearchQuery]:
+    """Fallback planner that derives keyword-based tasks.
+
+    Args:
+        query: User's search query
+        max_tasks: Maximum number of search tasks to generate
+        time_sensitive: If True, prioritize queries for current/recent content
+    """
     logger = get_logger(__name__)
     logger.debug(
         "heuristic_plan_start",
-        extra={"query": query, "max_tasks": max_tasks},
+        extra={
+            "query": query,
+            "max_tasks": max_tasks,
+            "time_sensitive": time_sensitive,
+        },
     )
     now = datetime.utcnow()
     base = query.strip()
@@ -155,12 +213,23 @@ def heuristic_plan(query: str, max_tasks: int = 4) -> List[SearchQuery]:
 
     # Add topic-specific queries if we can identify meaningful keywords
     if keywords:
-        # Topic + current year for time-relevant results
-        seeds.append(f"{topic} {now.year}")
-        # Topic + guide/overview query for comprehensive info
-        seeds.append(f"{topic} guide overview")
-        # Topic + latest/news for recent updates
-        seeds.append(f"{topic} latest news {now.year}")
+        if time_sensitive:
+            # For time-sensitive queries, emphasize recency
+            current_season = _current_season(now.year, now.month)
+            seeds.extend(
+                [
+                    f"{topic} {now.year}",
+                    f"{topic} {current_season} {now.year}",
+                    f"{topic} latest releases {now.year}",
+                ]
+            )
+        else:
+            # Topic + current year for time-relevant results
+            seeds.append(f"{topic} {now.year}")
+            # Topic + guide/overview query for comprehensive info
+            seeds.append(f"{topic} guide overview")
+            # Topic + latest/news for recent updates
+            seeds.append(f"{topic} latest news {now.year}")
     else:
         # If no keywords extracted, try variations of the original query
         seeds.extend(
@@ -180,21 +249,46 @@ def heuristic_plan(query: str, max_tasks: int = 4) -> List[SearchQuery]:
         )
     logger.info(
         "planner_heuristic_complete",
-        extra={"tasks": len(tasks), "max_tasks": max_tasks, "topic": topic},
+        extra={
+            "tasks": len(tasks),
+            "max_tasks": max_tasks,
+            "topic": topic,
+            "time_sensitive": time_sensitive,
+        },
     )
     return tasks
 
 
-def plan_query(query: str, llm=None, max_tasks: int = 4) -> List[SearchQuery]:
-    """Use an instruct model (if provided) to plan; otherwise fall back to heuristics."""
+def plan_query(
+    query: str, llm=None, max_tasks: int = 4
+) -> Tuple[List[SearchQuery], bool]:
+    """Use an instruct model (if provided) to plan; otherwise fall back to heuristics.
+
+    Returns:
+        Tuple of (search_tasks, is_time_sensitive)
+    """
     logger = get_logger(__name__)
+
+    # Detect if query is time-sensitive
+    time_sensitive, matched_keywords = detect_time_sensitive(query)
+
     logger.info(
         "plan_query_start",
-        extra={"query": query, "max_tasks": max_tasks, "has_llm": llm is not None},
+        extra={
+            "query": query,
+            "max_tasks": max_tasks,
+            "has_llm": llm is not None,
+            "time_sensitive": time_sensitive,
+            "temporal_keywords": matched_keywords,
+        },
     )
+
     if not llm:
         logger.debug("plan_query_using_heuristic", extra={"reason": "no_llm_provided"})
-        return heuristic_plan(query, max_tasks=max_tasks)
+        tasks = heuristic_plan(
+            query, max_tasks=max_tasks, time_sensitive=time_sensitive
+        )
+        return tasks, time_sensitive
 
     prompt = (
         "You are a research planner. Break the user question into at most "
@@ -230,7 +324,7 @@ def plan_query(query: str, llm=None, max_tasks: int = 4) -> List[SearchQuery]:
                 "planner_llm_complete",
                 extra={"tasks": len(tasks), "max_tasks": max_tasks},
             )
-            return tasks
+            return tasks, time_sensitive
     except Exception as exc:
         logger.warning(
             "planner_llm_failed",
@@ -242,4 +336,5 @@ def plan_query(query: str, llm=None, max_tasks: int = 4) -> List[SearchQuery]:
         "planner_fallback_heuristic",
         extra={"max_tasks": max_tasks, "reason": "llm_failed_or_no_tasks"},
     )
-    return heuristic_plan(query, max_tasks=max_tasks)
+    tasks = heuristic_plan(query, max_tasks=max_tasks, time_sensitive=time_sensitive)
+    return tasks, time_sensitive

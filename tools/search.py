@@ -2,6 +2,7 @@
 
 import time
 import warnings
+from abc import ABC, abstractmethod
 from typing import Iterable, List, Optional, Tuple
 
 import requests
@@ -52,145 +53,347 @@ META_CONTENT_DOMAINS = {
     "thesaurus.com",
 }
 
+# Topic categories for routing queries to appropriate backends
+TOPIC_KEYWORDS = {
+    "entertainment": {
+        "anime",
+        "manga",
+        "movie",
+        "film",
+        "series",
+        "tv",
+        "show",
+        "season",
+        "episode",
+        "game",
+        "gaming",
+        "music",
+        "album",
+        "song",
+        "artist",
+        "concert",
+        "theater",
+        "drama",
+        "comedy",
+        "horror",
+        "action",
+    },
+    "technology": {
+        "programming",
+        "software",
+        "hardware",
+        "computer",
+        "code",
+        "coding",
+        "python",
+        "javascript",
+        "api",
+        "framework",
+        "library",
+        "database",
+        "cloud",
+        "server",
+        "network",
+        "cybersecurity",
+        "ai",
+        "machine learning",
+    },
+    "news": {
+        "news",
+        "breaking",
+        "today",
+        "latest",
+        "update",
+        "announcement",
+        "report",
+        "press",
+        "media",
+        "headline",
+    },
+    "science": {
+        "research",
+        "study",
+        "experiment",
+        "scientific",
+        "physics",
+        "chemistry",
+        "biology",
+        "medicine",
+        "health",
+        "disease",
+        "treatment",
+        "vaccine",
+    },
+}
 
-def search_duckduckgo(
-    query: str, max_results: int = 5, run_id: Optional[str] = None
-) -> List[SearchResult]:
-    logger = get_logger(__name__, run_id=run_id)
-    logger.debug(
-        "duckduckgo_search_start",
-        extra={"query": query, "max_results": max_results},
-    )
-    results: List[SearchResult] = []
-    with DDGS() as ddgs:
+
+class SearchBackend(ABC):
+    """Abstract base class for search backends."""
+
+    name: str = "base"
+
+    @abstractmethod
+    def search(
+        self,
+        query: str,
+        max_results: int = 5,
+        run_id: Optional[str] = None,
+    ) -> List[SearchResult]:
+        """Execute a search and return results."""
+        pass
+
+    def supports_topic(self, topic: str) -> bool:
+        """Check if this backend is suitable for a given topic category."""
+        return True  # Default: supports all topics
+
+
+class DuckDuckGoBackend(SearchBackend):
+    """DuckDuckGo search backend."""
+
+    name = "duckduckgo"
+
+    def search(
+        self,
+        query: str,
+        max_results: int = 5,
+        run_id: Optional[str] = None,
+    ) -> List[SearchResult]:
+        logger = get_logger(__name__, run_id=run_id)
+        logger.debug(
+            "duckduckgo_search_start",
+            extra={"query": query, "max_results": max_results},
+        )
+        results: List[SearchResult] = []
+        with DDGS() as ddgs:
+            for attempt in range(1, SEARCH_RETRIES + 2):
+                try:
+                    for item in ddgs.text(query, max_results=max_results):
+                        url = item.get("href") or ""
+                        title = item.get("title") or ""
+                        snippet = item.get("body") or ""
+                        if not url:
+                            logger.debug(
+                                "duckduckgo_skip_no_url", extra={"title": title}
+                            )
+                            continue
+                        logger.debug(
+                            "duckduckgo_result_found",
+                            extra={"url": url, "title": title[:50]},
+                        )
+                        results.append(
+                            SearchResult(
+                                url=url,
+                                title=title,
+                                snippet=snippet,
+                                source="duckduckgo",
+                            )
+                        )
+                    break
+                except Exception as exc:
+                    logger.warning(
+                        "duckduckgo_search_retry",
+                        extra={"attempt": attempt, "error": str(exc)},
+                    )
+                    time.sleep(SEARCH_RATE_LIMIT_SECONDS)
+        logger.info(
+            "duckduckgo_search_complete",
+            extra={"results": len(results), "query": query},
+        )
+        return results
+
+
+class WikipediaBackend(SearchBackend):
+    """Wikipedia search backend with full summaries."""
+
+    name = "wikipedia"
+
+    def search(
+        self,
+        query: str,
+        max_results: int = 3,
+        run_id: Optional[str] = None,
+    ) -> List[SearchResult]:
+        """Search Wikipedia and return results with full summaries as content.
+
+        Wikipedia blocks most user agents via robots.txt, so we use the wikipedia
+        API to get summaries directly rather than trying to fetch pages later.
+        """
+        logger = get_logger(__name__, run_id=run_id)
+        logger.debug(
+            "wikipedia_search_start",
+            extra={"query": query, "max_results": max_results},
+        )
+        results: List[SearchResult] = []
         for attempt in range(1, SEARCH_RETRIES + 2):
             try:
-                for item in ddgs.text(query, max_results=max_results):
-                    url = item.get("href") or ""
-                    title = item.get("title") or ""
-                    snippet = item.get("body") or ""
-                    if not url:
-                        logger.debug("duckduckgo_skip_no_url", extra={"title": title})
-                        continue
-                    logger.debug(
-                        "duckduckgo_result_found",
-                        extra={"url": url, "title": title[:50]},
+                titles = wikipedia.search(query, results=max_results)
+                logger.debug(
+                    "wikipedia_titles_found",
+                    extra={"titles": titles, "count": len(titles)},
+                )
+                for title in titles:
+                    try:
+                        # Get a longer summary (5 sentences) since we'll use this as content
+                        summary = wikipedia.summary(
+                            title, sentences=5, auto_suggest=False
+                        )
+                        logger.debug(
+                            "wikipedia_summary_fetched",
+                            extra={"title": title, "chars": len(summary)},
+                        )
+                    except Exception as exc:
+                        logger.debug(
+                            "wikipedia_summary_failed",
+                            extra={"title": title, "error": str(exc)},
+                        )
+                        summary = ""
+                    if not summary:
+                        logger.debug(
+                            "wikipedia_skip_no_summary", extra={"title": title}
+                        )
+                        continue  # Skip results without content
+                    page_url = (
+                        f"https://en.wikipedia.org/wiki/{title.replace(' ', '_')}"
                     )
                     results.append(
                         SearchResult(
-                            url=url,
+                            url=page_url,
                             title=title,
-                            snippet=snippet,
-                            source="duckduckgo",
+                            snippet=summary,
+                            source="wikipedia",
+                            # Store full content so we can use it without fetching
+                            content=summary,
                         )
                     )
                 break
             except Exception as exc:
                 logger.warning(
-                    "duckduckgo_search_retry",
+                    "wikipedia_search_retry",
                     extra={"attempt": attempt, "error": str(exc)},
                 )
                 time.sleep(SEARCH_RATE_LIMIT_SECONDS)
-    logger.info(
-        "duckduckgo_search_complete", extra={"results": len(results), "query": query}
-    )
-    return results
+        logger.info("wikipedia_search_complete", extra={"results": len(results)})
+        return results
+
+    def supports_topic(self, topic: str) -> bool:
+        """Wikipedia is good for factual/encyclopedic content, less for current events."""
+        # Wikipedia is less suitable for very current/time-sensitive topics
+        return topic not in {"news"}
+
+
+class SearxBackend(SearchBackend):
+    """SearxNG search backend."""
+
+    name = "searx"
+
+    def __init__(self, host: str):
+        self.host = host
+
+    def search(
+        self,
+        query: str,
+        max_results: int = 5,
+        run_id: Optional[str] = None,
+    ) -> List[SearchResult]:
+        """Optional SearxNG search if a host is provided."""
+        logger = get_logger(__name__, run_id=run_id)
+        logger.debug(
+            "searx_search_start",
+            extra={"query": query, "host": self.host, "max_results": max_results},
+        )
+        params = {"q": query, "format": "json", "language": "en", "safesearch": 1}
+        results: List[SearchResult] = []
+        for attempt in range(1, SEARCH_RETRIES + 2):
+            try:
+                resp = requests.get(f"{self.host}/search", params=params, timeout=10)
+                resp.raise_for_status()
+                data = resp.json()
+                for item in data.get("results", [])[:max_results]:
+                    results.append(
+                        SearchResult(
+                            url=item.get("url", ""),
+                            title=item.get("title", ""),
+                            snippet=item.get("content", ""),
+                            source="searx",
+                        )
+                    )
+                break
+            except Exception as exc:
+                logger.warning(
+                    "searx_search_retry",
+                    extra={"attempt": attempt, "error": str(exc), "host": self.host},
+                )
+                time.sleep(SEARCH_RATE_LIMIT_SECONDS)
+        logger.info(
+            "searx_search_complete", extra={"results": len(results), "host": self.host}
+        )
+        return results
+
+
+# Registry of available search backends
+_BACKEND_REGISTRY: dict[str, type[SearchBackend]] = {
+    "duckduckgo": DuckDuckGoBackend,
+    "wikipedia": WikipediaBackend,
+}
+
+
+def register_backend(name: str, backend_class: type[SearchBackend]) -> None:
+    """Register a custom search backend."""
+    _BACKEND_REGISTRY[name] = backend_class
+
+
+def get_backend(name: str, **kwargs) -> Optional[SearchBackend]:
+    """Get a search backend instance by name."""
+    if name == "searx" and "host" in kwargs:
+        return SearxBackend(host=kwargs["host"])
+    backend_class = _BACKEND_REGISTRY.get(name)
+    if backend_class:
+        return backend_class()
+    return None
+
+
+def detect_query_topic(query: str) -> Optional[str]:
+    """Detect the likely topic category of a query."""
+    query_lower = query.lower()
+    query_words = set(query_lower.split())
+
+    best_topic = None
+    best_overlap = 0
+
+    for topic, keywords in TOPIC_KEYWORDS.items():
+        overlap = len(query_words & keywords)
+        # Also check for partial matches in the full query string
+        for keyword in keywords:
+            if keyword in query_lower and len(keyword) > 3:
+                overlap += 0.5
+
+        if overlap > best_overlap:
+            best_overlap = overlap
+            best_topic = topic
+
+    return best_topic if best_overlap >= 1 else None
+
+
+# Legacy function wrappers for backward compatibility
+def search_duckduckgo(
+    query: str, max_results: int = 5, run_id: Optional[str] = None
+) -> List[SearchResult]:
+    backend = DuckDuckGoBackend()
+    return backend.search(query, max_results, run_id)
 
 
 def search_wikipedia(
     query: str, max_results: int = 3, run_id: Optional[str] = None
 ) -> List[SearchResult]:
-    """Search Wikipedia and return results with full summaries as content.
-
-    Wikipedia blocks most user agents via robots.txt, so we use the wikipedia
-    API to get summaries directly rather than trying to fetch pages later.
-    """
-    logger = get_logger(__name__, run_id=run_id)
-    logger.debug(
-        "wikipedia_search_start",
-        extra={"query": query, "max_results": max_results},
-    )
-    results: List[SearchResult] = []
-    for attempt in range(1, SEARCH_RETRIES + 2):
-        try:
-            titles = wikipedia.search(query, results=max_results)
-            logger.debug(
-                "wikipedia_titles_found",
-                extra={"titles": titles, "count": len(titles)},
-            )
-            for title in titles:
-                try:
-                    # Get a longer summary (5 sentences) since we'll use this as content
-                    summary = wikipedia.summary(title, sentences=5, auto_suggest=False)
-                    logger.debug(
-                        "wikipedia_summary_fetched",
-                        extra={"title": title, "chars": len(summary)},
-                    )
-                except Exception as exc:
-                    logger.debug(
-                        "wikipedia_summary_failed",
-                        extra={"title": title, "error": str(exc)},
-                    )
-                    summary = ""
-                if not summary:
-                    logger.debug("wikipedia_skip_no_summary", extra={"title": title})
-                    continue  # Skip results without content
-                page_url = f"https://en.wikipedia.org/wiki/{title.replace(' ', '_')}"
-                results.append(
-                    SearchResult(
-                        url=page_url,
-                        title=title,
-                        snippet=summary,
-                        source="wikipedia",
-                        # Store full content so we can use it without fetching
-                        content=summary,
-                    )
-                )
-            break
-        except Exception as exc:
-            logger.warning(
-                "wikipedia_search_retry",
-                extra={"attempt": attempt, "error": str(exc)},
-            )
-            time.sleep(SEARCH_RATE_LIMIT_SECONDS)
-    logger.info("wikipedia_search_complete", extra={"results": len(results)})
-    return results
+    backend = WikipediaBackend()
+    return backend.search(query, max_results, run_id)
 
 
 def search_searx(
     query: str, host: str, max_results: int = 5, run_id: Optional[str] = None
 ) -> List[SearchResult]:
-    """Optional SearxNG search if a host is provided."""
-    logger = get_logger(__name__, run_id=run_id)
-    logger.debug(
-        "searx_search_start",
-        extra={"query": query, "host": host, "max_results": max_results},
-    )
-    params = {"q": query, "format": "json", "language": "en", "safesearch": 1}
-    results: List[SearchResult] = []
-    for attempt in range(1, SEARCH_RETRIES + 2):
-        try:
-            resp = requests.get(f"{host}/search", params=params, timeout=10)
-            resp.raise_for_status()
-            data = resp.json()
-            for item in data.get("results", [])[:max_results]:
-                results.append(
-                    SearchResult(
-                        url=item.get("url", ""),
-                        title=item.get("title", ""),
-                        snippet=item.get("content", ""),
-                        source="searx",
-                    )
-                )
-            break
-        except Exception as exc:
-            logger.warning(
-                "searx_search_retry",
-                extra={"attempt": attempt, "error": str(exc), "host": host},
-            )
-            time.sleep(SEARCH_RATE_LIMIT_SECONDS)
-    logger.info("searx_search_complete", extra={"results": len(results), "host": host})
-    return results
+    backend = SearxBackend(host=host)
+    return backend.search(query, max_results, run_id)
 
 
 def dedupe_results(results: Iterable[SearchResult]) -> List[SearchResult]:

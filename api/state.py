@@ -65,6 +65,7 @@ class GraphState(TypedDict, total=False):
     documents: List[Document]
     chunks: List[Chunk]
     retrieved: List[Chunk]
+    retrieval_scores: List[float]  # Similarity scores from vector store query
     draft_answer: str
     verified_answer: str
     citations: List[Dict[str, str]]
@@ -73,3 +74,4 @@ class GraphState(TypedDict, total=False):
     adaptive_iterations: int
     qc_passes: int
     qc_notes: List[str]
+    time_sensitive: bool  # Flag for time-sensitive queries

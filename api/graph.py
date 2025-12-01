@@ -49,7 +49,8 @@ def build_workflow(
         )
         try:
             # Default to heuristic planner for stability
-            plan = plan_query(query_text, llm=None)
+            # plan_query now returns (tasks, time_sensitive) tuple
+            plan, time_sensitive = plan_query(query_text, llm=None)
             log.info(
                 "plan_complete",
                 extra={
@@ -57,14 +58,15 @@ def build_workflow(
                     "duration_ms": (perf_counter() - start) * 1000,
                     "query": query_text,
                     "task_queries": [t.text for t in plan],
+                    "time_sensitive": time_sensitive,
                 },
             )
-            return {"plan": plan}
+            return {"plan": plan, "time_sensitive": time_sensitive}
         except Exception as exc:  # pragma: no cover - defensive
             log.exception("plan_failed", extra={"error": str(exc)})
             errors = state.get("errors", [])
             errors.append(f"plan_failed: {exc}")
-            return {"plan": [], "errors": errors}
+            return {"plan": [], "time_sensitive": False, "errors": errors}
 
     def search_node(state: GraphState) -> GraphState:
         log = get_logger("api.graph.search", run_id=state.get("run_id"))
@@ -169,7 +171,7 @@ def build_workflow(
             log.warning("retrieve_no_chunks")
             warnings = state.get("warnings", [])
             warnings.append("No chunks to retrieve from; skipping retrieval.")
-            return {"retrieved": [], "warnings": warnings}
+            return {"retrieved": [], "retrieval_scores": [], "warnings": warnings}
         query_text = state.get("query", "")
         log.info(
             "retrieve_start",
@@ -181,19 +183,21 @@ def build_workflow(
         )
         scored = store.query(query_text, top_k=top_k)
         retrieved = [sc.chunk for sc in scored]
+        scores = [sc.score for sc in scored]
         log.info(
             "retrieve_complete",
             extra={
                 "retrieved": len(retrieved),
                 "top_k": top_k,
-                "scores": [sc.score for sc in scored],
+                "scores": scores,
+                "avg_score": sum(scores) / len(scores) if scores else 0,
                 "duration_ms": (perf_counter() - start) * 1000,
             },
         )
         warnings = state.get("warnings", [])
         if not retrieved:
             warnings.append("No retrieved context; answer may be unsupported.")
-        return {"retrieved": retrieved, "warnings": warnings}
+        return {"retrieved": retrieved, "retrieval_scores": scores, "warnings": warnings}
 
     def adaptive_node(state: GraphState) -> GraphState:
         log = get_logger("api.graph.adaptive", run_id=state.get("run_id"))
@@ -201,15 +205,25 @@ def build_workflow(
         warnings = state.get("warnings", [])
         adaptive_iterations = state.get("adaptive_iterations", 0)
         retrieved = state.get("retrieved", [])
+        retrieval_scores = state.get("retrieval_scores", [])
+        query_text = state.get("query", "")
         log.info(
             "adaptive_start",
             extra={
                 "adaptive_iterations": adaptive_iterations,
                 "retrieved_count": len(retrieved),
+                "retrieval_scores": retrieval_scores,
                 "max_iters": ADAPTIVE_MAX_ITERS,
             },
         )
-        needs_more, assess_warnings = assess_context(retrieved, min_chunks=1)
+        # Pass query and scores to assess_context for relevance-based assessment
+        needs_more, assess_warnings = assess_context(
+            retrieved,
+            min_chunks=1,
+            run_id=state.get("run_id"),
+            query=query_text,
+            scores=retrieval_scores,
+        )
         warnings.extend(assess_warnings)
         if not needs_more or adaptive_iterations >= ADAPTIVE_MAX_ITERS:
             log.info(
@@ -229,7 +243,11 @@ def build_workflow(
             }
         log.info(
             "adaptive_triggered",
-            extra={"reason": "insufficient_context", "retrieved": len(retrieved)},
+            extra={
+                "reason": "insufficient_or_irrelevant_context",
+                "retrieved": len(retrieved),
+                "avg_score": sum(retrieval_scores) / len(retrieval_scores) if retrieval_scores else 0,
+            },
         )
         new_tasks = refine_plan(state.get("query", ""), state.get("plan", []))
         plan = state.get("plan", []) + new_tasks
@@ -254,9 +272,9 @@ def build_workflow(
         store.clear()
         chunks = chunk_documents(documents, chunker, run_id=state.get("run_id"))
         store.upsert(chunks)
-        query_text = state.get("query", "")
         scored = store.query(query_text, top_k=top_k)
         retrieved = [sc.chunk for sc in scored]
+        retrieval_scores = [sc.score for sc in scored]
         adaptive_iterations += 1
         log.info(
             "adaptive_cycle_complete",
@@ -264,6 +282,7 @@ def build_workflow(
                 "adaptive_iterations": adaptive_iterations,
                 "tasks": len(plan),
                 "retrieved": len(retrieved),
+                "retrieval_scores": retrieval_scores,
                 "documents": len(documents),
                 "chunks": len(chunks),
                 "duration_ms": (perf_counter() - start) * 1000,
@@ -275,6 +294,7 @@ def build_workflow(
             "documents": documents,
             "chunks": chunks,
             "retrieved": retrieved,
+            "retrieval_scores": retrieval_scores,
             "warnings": warnings,
             "adaptive_iterations": adaptive_iterations,
         }
@@ -341,15 +361,23 @@ def build_workflow(
         answer = state.get("verified_answer") or state.get("draft_answer", "")
         query = state.get("query", "")
         retrieved = state.get("retrieved", [])
+        retrieval_scores = state.get("retrieval_scores", [])
         log.info(
             "qc_start",
             extra={
                 "qc_passes": qc_passes,
                 "answer_length": len(answer),
                 "retrieved_chunks": len(retrieved),
+                "retrieval_scores": retrieval_scores,
             },
         )
-        assessment = assess_answer(query, answer, retrieved)
+        assessment = assess_answer(
+            query,
+            answer,
+            retrieved,
+            run_id=state.get("run_id"),
+            retrieval_scores=retrieval_scores,
+        )
         notes = state.get("qc_notes", [])
         notes.append(f"pass {qc_passes}: issues={assessment['issues']}")
         if assessment["is_good_enough"] or qc_passes >= QC_MAX_PASSES:
@@ -449,6 +477,7 @@ def run_research(
         "documents": [],
         "chunks": [],
         "retrieved": [],
+        "retrieval_scores": [],
         "draft_answer": "",
         "verified_answer": "",
         "citations": [],
@@ -457,6 +486,7 @@ def run_research(
         "adaptive_iterations": 0,
         "qc_passes": 0,
         "qc_notes": [],
+        "time_sensitive": False,
     }
     logger.debug("run_research_invoking_workflow")
     result = workflow.invoke(cast(GraphState, initial_state))
