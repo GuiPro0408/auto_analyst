@@ -37,6 +37,7 @@ def main():
         "documents": [],
         "chunks": [],
         "retrieved": [],
+        "retrieval_scores": [],
         "draft_answer": "",
         "verified_answer": "",
         "citations": [],
@@ -45,6 +46,8 @@ def main():
         "adaptive_iterations": 0,
         "qc_passes": 0,
         "qc_notes": [],
+        "conversation_history": [],
+        "time_sensitive": False,
     }
     app.invoke(initial_state)
     print("OK")

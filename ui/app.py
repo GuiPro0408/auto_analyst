@@ -9,8 +9,15 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:  # Ensure local imports work when run via streamlit
     sys.path.insert(0, str(ROOT))
 
-from api.config import DEFAULT_EMBED_MODEL, DEFAULT_LLM_MODEL, TOP_K_RESULTS
+from api.config import (
+    CONVERSATION_MEMORY_TURNS,
+    DEFAULT_EMBED_MODEL,
+    DEFAULT_LLM_MODEL,
+    TOP_K_RESULTS,
+)
 from api.graph import run_research
+from api.memory import trim_history
+from api.state import ConversationTurn
 from tools.models import load_llm
 from tools.retriever import build_vector_store
 
@@ -26,6 +33,8 @@ if "last_result" not in st.session_state:
     st.session_state.last_result = None
 if "progress" not in st.session_state:
     st.session_state.progress = "Idle"
+if "conversation_snapshot" not in st.session_state:
+    st.session_state.conversation_snapshot = []
 
 
 with st.sidebar:
@@ -46,6 +55,25 @@ with st.sidebar:
     searx_host = st.text_input(
         "Optional SearxNG host (e.g., https://searx.example.com)"
     )
+
+    st.markdown("---")
+    st.caption(
+        f"Conversation memory keeps the last {CONVERSATION_MEMORY_TURNS} answers so follow-up questions stay grounded."
+    )
+    if st.button("Reset conversation memory"):
+        st.session_state.conversation_snapshot = []
+        st.success("Conversation memory cleared")
+
+    with st.expander("Current memory", expanded=False):
+        if st.session_state.conversation_snapshot:
+            for turn in st.session_state.conversation_snapshot:
+                st.markdown(f"**You:** {turn.get('query', '')}")
+                answer_preview = turn.get("answer", "")[:200]
+                if len(turn.get("answer", "")) > 200:
+                    answer_preview += "..."
+                st.caption(f"Assistant: {answer_preview}")
+        else:
+            st.caption("No prior turns stored yet.")
 
 
 query = st.text_area("What do you want to research?", height=120)
@@ -69,6 +97,12 @@ if run and query.strip():
         llm = load_llm(model_name=llm_model)
         store = build_vector_store(model_name=embed_model)
 
+        history_turns = [
+            ConversationTurn.from_dict(turn)
+            for turn in st.session_state.conversation_snapshot
+        ]
+        history_turns = trim_history(history_turns, CONVERSATION_MEMORY_TURNS)
+
         st.session_state.progress = "Executing pipeline"
         progress_placeholder.info(st.session_state.progress)
         result = run_research(
@@ -78,8 +112,12 @@ if run and query.strip():
             embed_model=embed_model,
             searx_host=searx_host or None,
             top_k=top_k,
+            conversation_history=history_turns,
         )
         st.session_state.last_result = result
+        st.session_state.conversation_snapshot = [
+            turn.to_dict() for turn in result.conversation_history
+        ]
         st.session_state.history.insert(
             0,
             {

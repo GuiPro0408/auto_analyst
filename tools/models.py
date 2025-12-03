@@ -1,112 +1,117 @@
 """Model loading helpers for free/open-source LLMs and embedding models."""
 
-import os
 from functools import lru_cache
 from time import perf_counter
+from typing import Any, Dict, List, Optional
 
+from huggingface_hub import InferenceClient
 from sentence_transformers import SentenceTransformer
-from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
 
 from api.config import (
     DEFAULT_EMBED_MODEL,
     DEFAULT_LLM_MODEL,
+    GEMINI_API_KEY,
+    GEMINI_MODEL,
     GENERATION_KWARGS,
-    MIN_RECOMMENDED_MEMORY_GB,
+    HUGGINGFACE_API_TOKEN,
+    HUGGINGFACE_INFERENCE_MODEL,
+    LLM_BACKEND,
 )
 from api.logging_setup import get_logger
 
 
-def _get_available_memory_gb() -> float:
-    """Get available system memory in GB."""
-    try:
-        import psutil
+class GeminiLLM:
+    """Callable wrapper for Google Gemini models matching HF pipeline output."""
 
-        mem = psutil.virtual_memory()
-        return mem.available / (1024**3)
-    except ImportError:
-        # psutil not installed, try reading /proc/meminfo on Linux
-        try:
-            with open("/proc/meminfo", "r") as f:
-                for line in f:
-                    if line.startswith("MemAvailable:"):
-                        # Value is in kB
-                        kb = int(line.split()[1])
-                        return kb / (1024**2)
-        except (FileNotFoundError, ValueError, IndexError):
-            pass
-    return -1  # Unknown
-
-
-def _check_memory_requirements(model_name: str) -> None:
-    """Log a warning if available memory is below recommended threshold."""
-    logger = get_logger(__name__)
-
-    # Model memory requirements (approximate, in GB)
-    # These are full precision weights; actual usage varies with batch size
-    MODEL_MEMORY_REQUIREMENTS = {
-        "qwen2.5-1.5b": 4,
-        "qwen2.5-0.5b": 2,
-        "qwen2.5-3b": 7,
-        "qwen2.5-7b": 16,
-        "gemma-2-2b": 6,
-        "phi-3-mini": 8,
-        "tinyllama": 3,
-        "mistral-7b": 16,
-        "llama-3.1-8b": 18,
-    }
-
-    available_gb = _get_available_memory_gb()
-    if available_gb < 0:
-        logger.debug(
-            "memory_check_skipped",
-            extra={"reason": "unable_to_detect_memory"},
-        )
-        return
-
-    # Determine required memory based on model name
-    model_lower = model_name.lower()
-    required_gb = MIN_RECOMMENDED_MEMORY_GB  # Default fallback
-
-    for pattern, mem_gb in MODEL_MEMORY_REQUIREMENTS.items():
-        if pattern in model_lower:
-            required_gb = mem_gb
-            break
-
-    if available_gb < required_gb:
-        # Suggest appropriate alternative based on available memory
-        if available_gb >= 6:
-            suggestion = "Qwen/Qwen2.5-1.5B-Instruct or google/gemma-2-2b-it"
-        elif available_gb >= 4:
-            suggestion = "Qwen/Qwen2.5-1.5B-Instruct or Qwen/Qwen2.5-0.5B-Instruct"
-        else:
-            suggestion = (
-                "Qwen/Qwen2.5-0.5B-Instruct or TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+    def __init__(
+        self,
+        model_name: str,
+        api_key: str,
+        generation_kwargs: Dict[str, Any],
+        genai_module: Optional[Any] = None,
+    ) -> None:
+        if not api_key:
+            raise ValueError(
+                "GOOGLE_API_KEY is not set. Please add it to your environment or .env file."
             )
 
-        logger.warning(
-            "low_memory_warning",
+        self.logger = get_logger(__name__)
+
+        if genai_module is None:
+            try:
+                import google.generativeai as genai  # pylint: disable=import-error
+            except ImportError as exc:  # pragma: no cover - dependency issue
+                raise ImportError(
+                    "google-generativeai is required for the Gemini backend. Install it via requirements.txt."
+                ) from exc
+            genai_module = genai
+
+        genai_module.configure(api_key=api_key)
+        self._genai = genai_module
+        self._model = genai_module.GenerativeModel(model_name)
+        self._model_name = model_name
+        self._generation_config = self._map_generation_kwargs(generation_kwargs)
+        self.logger.info(
+            "gemini_llm_initialized",
             extra={
-                "available_gb": round(available_gb, 2),
-                "required_gb": required_gb,
                 "model_name": model_name,
-                "suggestion": f"Consider using: {suggestion}",
+                "generation_config": self._generation_config,
             },
         )
-        print(
-            f"\n⚠️  WARNING: Low memory detected ({available_gb:.1f}GB available, "
-            f"~{required_gb}GB needed for {model_name}).\n"
-            f"   Consider using a smaller model:\n"
-            f"   export AUTO_ANALYST_LLM='{suggestion.split(' or ')[0]}'\n"
-        )
-    else:
-        logger.info(
-            "memory_check_passed",
+
+    @staticmethod
+    def _map_generation_kwargs(kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        config: Dict[str, Any] = {}
+        if "max_new_tokens" in kwargs:
+            config["max_output_tokens"] = kwargs["max_new_tokens"]
+        if "temperature" in kwargs:
+            config["temperature"] = kwargs["temperature"]
+        # Gemini does not support do_sample flag directly; ignore but keep log clarity.
+        return config
+
+    def __call__(self, prompt: str) -> List[Dict[str, str]]:
+        start = perf_counter()
+        try:
+            response = self._model.generate_content(
+                prompt,
+                generation_config=self._generation_config,
+            )
+        except Exception as exc:  # pragma: no cover - relies on remote API
+            self.logger.exception(
+                "gemini_generate_failed",
+                extra={"model_name": self._model_name},
+            )
+            raise RuntimeError(f"Gemini API call failed: {exc}") from exc
+
+        text = getattr(response, "text", "")
+        if not text and getattr(response, "candidates", None):
+            parts: List[str] = []
+            for candidate in response.candidates:
+                content = getattr(candidate, "content", None)
+                content_parts = getattr(content, "parts", None) if content else None
+                if not content_parts:
+                    continue
+                for part in content_parts:
+                    parts.append(getattr(part, "text", ""))
+            text = "".join(parts).strip()
+
+        if not text:
+            self.logger.warning(
+                "gemini_response_empty",
+                extra={"model_name": self._model_name},
+            )
+            text = ""
+
+        duration_ms = (perf_counter() - start) * 1000
+        self.logger.info(
+            "gemini_generate_complete",
             extra={
-                "available_gb": round(available_gb, 2),
-                "required_gb": required_gb,
-                "model_name": model_name,
+                "model_name": self._model_name,
+                "duration_ms": duration_ms,
+                "output_length": len(text),
             },
         )
+        return [{"generated_text": text}]
 
 
 @lru_cache(maxsize=2)
@@ -128,34 +133,153 @@ def load_embedding_model(
     return model
 
 
+class HuggingFaceInferenceLLM:
+    """Callable wrapper around HuggingFace Inference API."""
+
+    def __init__(
+        self,
+        model_name: str,
+        api_token: str,
+        generation_kwargs: Dict[str, Any],
+        client: Optional[InferenceClient] = None,
+    ) -> None:
+        if not api_token:
+            raise ValueError(
+                "HUGGINGFACE_API_TOKEN is not set. Please configure it in your environment or .env file."
+            )
+
+        self.logger = get_logger(__name__)
+        self._model_name = model_name
+        self._generation_kwargs = self._map_generation_kwargs(generation_kwargs)
+        self._client = client or InferenceClient(model=model_name, token=api_token)
+        self.logger.info(
+            "hf_inference_llm_initialized",
+            extra={
+                "model_name": model_name,
+                "generation_kwargs": self._generation_kwargs,
+            },
+        )
+
+    @staticmethod
+    def _map_generation_kwargs(kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        mapped = {}
+        if "max_new_tokens" in kwargs:
+            mapped["max_new_tokens"] = kwargs["max_new_tokens"]
+        if "temperature" in kwargs:
+            mapped["temperature"] = kwargs["temperature"]
+        if "do_sample" in kwargs:
+            mapped["do_sample"] = kwargs["do_sample"]
+        return mapped
+
+    def __call__(self, prompt: str) -> List[Dict[str, str]]:
+        start = perf_counter()
+        try:
+            response = self._client.text_generation(
+                prompt,
+                **self._generation_kwargs,
+            )
+        except Exception as exc:  # pragma: no cover - remote dependency
+            self.logger.exception(
+                "hf_inference_generate_failed",
+                extra={"model_name": self._model_name},
+            )
+            raise RuntimeError(f"HuggingFace Inference API call failed: {exc}") from exc
+
+        text: Optional[str] = None
+        if hasattr(response, "generated_text"):
+            text = getattr(response, "generated_text")
+        elif isinstance(response, dict):
+            text = response.get("generated_text")
+        elif isinstance(response, str):
+            text = response
+
+        if text is None:
+            text = str(response)
+
+        duration_ms = (perf_counter() - start) * 1000
+        self.logger.info(
+            "hf_inference_generate_complete",
+            extra={
+                "model_name": self._model_name,
+                "duration_ms": duration_ms,
+                "output_length": len(text),
+            },
+        )
+        return [{"generated_text": text}]
+
+
 @lru_cache(maxsize=2)
 def load_llm(model_name: str = DEFAULT_LLM_MODEL, device_map: str = "auto"):
-    """Load an instruct-tuned causal LM as a text-generation pipeline."""
+    """Load an instruct-tuned causal LM as a text-generation pipeline.
+
+    Cloud providers are used exclusively to avoid local GPU/CPU inference costs.
+    """
     logger = get_logger(__name__)
-    logger.info(
-        "load_llm_start",
-        extra={"model_name": model_name, "device_map": device_map},
-    )
 
-    # Check memory requirements before loading
-    _check_memory_requirements(model_name)
+    backend = LLM_BACKEND.lower()
+    if backend == "gemini":
+        configured_model = (
+            GEMINI_MODEL if model_name == DEFAULT_LLM_MODEL else model_name
+        )
+        logger.info(
+            "load_llm_gemini_start",
+            extra={
+                "model_name": configured_model,
+                "generation_kwargs": GENERATION_KWARGS,
+            },
+        )
+        try:
+            return GeminiLLM(
+                model_name=configured_model,
+                api_key=GEMINI_API_KEY,
+                generation_kwargs=GENERATION_KWARGS,
+            )
+        except ImportError as exc:
+            logger.warning(
+                "load_llm_gemini_dependency_missing",
+                extra={"error": str(exc)},
+            )
+            if HUGGINGFACE_API_TOKEN:
+                fallback_model = (
+                    HUGGINGFACE_INFERENCE_MODEL
+                    if model_name == DEFAULT_LLM_MODEL
+                    else model_name
+                )
+                logger.info(
+                    "load_llm_fallback_hf",
+                    extra={
+                        "fallback_model": fallback_model,
+                        "reason": "gemini_dependency_missing",
+                    },
+                )
+                return HuggingFaceInferenceLLM(
+                    model_name=fallback_model,
+                    api_token=HUGGINGFACE_API_TOKEN,
+                    generation_kwargs=GENERATION_KWARGS,
+                )
+            raise RuntimeError(
+                "Gemini backend requires the 'google-generativeai' package. Install it via requirements.txt "
+                "or set AUTO_ANALYST_LLM_BACKEND=huggingface."
+            ) from exc
+    if backend in {"huggingface", "hf", "hf_inference", "huggingface_inference"}:
+        configured_model = (
+            HUGGINGFACE_INFERENCE_MODEL
+            if model_name == DEFAULT_LLM_MODEL
+            else model_name
+        )
+        logger.info(
+            "load_llm_hf_inference_start",
+            extra={
+                "model_name": configured_model,
+                "generation_kwargs": GENERATION_KWARGS,
+            },
+        )
+        return HuggingFaceInferenceLLM(
+            model_name=configured_model,
+            api_token=HUGGINGFACE_API_TOKEN,
+            generation_kwargs=GENERATION_KWARGS,
+        )
 
-    start = perf_counter()
-    logger.debug("load_llm_tokenizer", extra={"model_name": model_name})
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    logger.debug("load_llm_model", extra={"model_name": model_name})
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name, device_map=device_map, trust_remote_code=False
+    raise ValueError(
+        "Unsupported AUTO_ANALYST_LLM_BACKEND. Supported values: 'gemini', 'huggingface'."
     )
-    gen_kwargs = GENERATION_KWARGS.copy()
-    logger.debug(
-        "load_llm_pipeline",
-        extra={"gen_kwargs": gen_kwargs},
-    )
-    pipe = pipeline("text-generation", model=model, tokenizer=tokenizer, **gen_kwargs)
-    duration_ms = (perf_counter() - start) * 1000
-    logger.info(
-        "load_llm_complete",
-        extra={"model_name": model_name, "duration_ms": duration_ms},
-    )
-    return pipe

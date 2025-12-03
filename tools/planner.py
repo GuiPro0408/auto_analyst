@@ -171,7 +171,10 @@ def _extract_topic_keywords(query: str) -> List[str]:
 
 
 def heuristic_plan(
-    query: str, max_tasks: int = 4, time_sensitive: bool = False
+    query: str,
+    max_tasks: int = 4,
+    time_sensitive: bool = False,
+    context: Optional[str] = None,
 ) -> List[SearchQuery]:
     """Fallback planner that derives keyword-based tasks.
 
@@ -179,6 +182,7 @@ def heuristic_plan(
         query: User's search query
         max_tasks: Maximum number of search tasks to generate
         time_sensitive: If True, prioritize queries for current/recent content
+        context: Optional prior conversation summary for follow-ups
     """
     logger = get_logger(__name__)
     logger.debug(
@@ -191,6 +195,7 @@ def heuristic_plan(
     )
     now = datetime.utcnow()
     base = query.strip()
+    keywords_source = f"{base}\n{context}" if context else base
 
     if not base:
         # No query provided - return empty plan
@@ -198,7 +203,7 @@ def heuristic_plan(
         return []
 
     # Extract topic keywords for more targeted searches
-    keywords = _extract_topic_keywords(base)
+    keywords = _extract_topic_keywords(keywords_source)
     logger.debug(
         "planner_keywords_extracted",
         extra={"keywords": keywords[:10], "keyword_count": len(keywords)},
@@ -254,13 +259,17 @@ def heuristic_plan(
             "max_tasks": max_tasks,
             "topic": topic,
             "time_sensitive": time_sensitive,
+            "context_included": bool(context),
         },
     )
     return tasks
 
 
 def plan_query(
-    query: str, llm=None, max_tasks: int = 4
+    query: str,
+    llm=None,
+    max_tasks: int = 4,
+    conversation_context: Optional[str] = None,
 ) -> Tuple[List[SearchQuery], bool]:
     """Use an instruct model (if provided) to plan; otherwise fall back to heuristics.
 
@@ -280,21 +289,35 @@ def plan_query(
             "has_llm": llm is not None,
             "time_sensitive": time_sensitive,
             "temporal_keywords": matched_keywords,
+            "conversation_context": bool(conversation_context),
         },
     )
 
     if not llm:
         logger.debug("plan_query_using_heuristic", extra={"reason": "no_llm_provided"})
         tasks = heuristic_plan(
-            query, max_tasks=max_tasks, time_sensitive=time_sensitive
+            query,
+            max_tasks=max_tasks,
+            time_sensitive=time_sensitive,
+            context=conversation_context,
         )
         return tasks, time_sensitive
+
+    context_block = ""
+    if conversation_context:
+        trimmed_context = " ".join(conversation_context.split())
+        if len(trimmed_context) > 800:
+            trimmed_context = trimmed_context[-800:]
+        context_block = (
+            "\nPrior conversation context (use to resolve references like 'it' or 'they'):\n"
+            f"{trimmed_context}\n"
+        )
 
     prompt = (
         "You are a research planner. Break the user question into at most "
         f"{max_tasks} focused web search tasks. Use concise, self-contained queries. "
         "Return each task on its own line as '<query> -- <rationale>'.\n"
-        f"User question: {query}"
+        f"User question: {query}{context_block}"
     )
     logger.debug("planner_llm_prompt", extra={"prompt_length": len(prompt)})
     try:
@@ -336,5 +359,10 @@ def plan_query(
         "planner_fallback_heuristic",
         extra={"max_tasks": max_tasks, "reason": "llm_failed_or_no_tasks"},
     )
-    tasks = heuristic_plan(query, max_tasks=max_tasks, time_sensitive=time_sensitive)
+    tasks = heuristic_plan(
+        query,
+        max_tasks=max_tasks,
+        time_sensitive=time_sensitive,
+        context=conversation_context,
+    )
     return tasks, time_sensitive

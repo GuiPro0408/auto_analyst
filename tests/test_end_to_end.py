@@ -68,3 +68,5 @@ def test_end_to_end_pipeline(monkeypatch):
     assert result.retrieved
     assert result.citations
     assert result.verified_answer.startswith("validated")
+    assert result.conversation_history
+    assert result.conversation_history[-1].query == "Test question"

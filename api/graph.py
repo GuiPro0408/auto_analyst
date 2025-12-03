@@ -1,25 +1,44 @@
 """LangGraph orchestration for the Auto-Analyst pipeline."""
 
 from time import perf_counter
-from typing import Any, Optional, cast
+from typing import Any, List, Optional, cast
 from uuid import uuid4
 
 from langgraph.graph import END, START, StateGraph
 
+from api.cache import (
+    CACHE_SCHEMA_VERSION,
+    QueryCache,
+    decode_research_state,
+    encode_research_state,
+)
 from api.config import (
     ADAPTIVE_MAX_ITERS,
+    CACHE_DB_PATH,
+    CACHE_TTL_SECONDS,
+    CONVERSATION_MEMORY_TURNS,
+    CONVERSATION_SUMMARY_CHARS,
     DEFAULT_EMBED_MODEL,
+    ENABLE_RERANKER,
+    FETCH_CONCURRENCY,
     QC_MAX_PASSES,
     TOP_K_RESULTS,
 )
 from api.logging_setup import get_logger
-from api.state import GraphState, ResearchState
+from api.memory import (
+    append_turn,
+    resolve_followup_query,
+    summarize_history,
+    trim_history,
+)
+from api.state import ConversationTurn, Document, GraphState, ResearchState
 from tools.adaptive_research import assess_context, refine_plan
-from tools.fetcher import fetch_url
+from tools.fetcher import fetch_documents_parallel, fetch_url
 from tools.generator import generate_answer, verify_answer
 from tools.planner import plan_query
 from tools.quality_control import assess_answer, improve_answer
 from tools.retriever import build_vector_store, chunk_documents
+from tools.reranker import rerank_chunks
 from tools.search import run_search_tasks
 from tools.chunker import TextChunker
 from tools.models import load_llm
@@ -43,14 +62,27 @@ def build_workflow(
         log = get_logger("api.graph.plan", run_id=state.get("run_id"))
         start = perf_counter()
         query_text = state.get("query", "")
+        history = state.get("conversation_history", []) or []
+        resolved_query = resolve_followup_query(query_text, history)
+        context_summary = summarize_history(
+            history,
+            max_chars=CONVERSATION_SUMMARY_CHARS,
+        )
         log.info(
             "plan_start",
-            extra={"query": query_text, "query_length": len(query_text)},
+            extra={
+                "query": query_text,
+                "query_length": len(query_text),
+                "history_turns": len(history),
+                "resolved_query_differs": resolved_query != query_text,
+            },
         )
         try:
-            # Default to heuristic planner for stability
-            # plan_query now returns (tasks, time_sensitive) tuple
-            plan, time_sensitive = plan_query(query_text, llm=None)
+            plan, time_sensitive = plan_query(
+                resolved_query,
+                llm=None,
+                conversation_context=context_summary,
+            )
             log.info(
                 "plan_complete",
                 extra={
@@ -59,6 +91,7 @@ def build_workflow(
                     "query": query_text,
                     "task_queries": [t.text for t in plan],
                     "time_sensitive": time_sensitive,
+                    "history_context": bool(context_summary),
                 },
             )
             return {"plan": plan, "time_sensitive": time_sensitive}
@@ -101,25 +134,22 @@ def build_workflow(
         search_results = state.get("search_results", [])
         log.info(
             "fetch_start",
-            extra={"search_results": len(search_results)},
+            extra={
+                "search_results": len(search_results),
+                "max_workers": FETCH_CONCURRENCY,
+            },
         )
-        documents = []
         warnings = state.get("warnings", [])
-        fetch_success = 0
+        documents: List[Document] = []
         fetch_failed = 0
-        for idx, res in enumerate(search_results):
-            log.debug(
-                "fetch_url_attempt",
-                extra={"index": idx, "url": res.url, "source": res.source},
+        if search_results:
+            documents, fetch_warnings = fetch_documents_parallel(
+                search_results,
+                max_workers=FETCH_CONCURRENCY,
+                run_id=state.get("run_id"),
             )
-            doc, warn = fetch_url(res, run_id=state.get("run_id"))
-            if doc:
-                documents.append(doc)
-                fetch_success += 1
-            else:
-                fetch_failed += 1
-            if warn:
-                warnings.append(f"{res.url}: {warn}")
+            warnings.extend(fetch_warnings)
+            fetch_failed = len(search_results) - len(documents)
         if not documents:
             warnings.append("No documents fetched from search results.")
         log.info(
@@ -127,7 +157,7 @@ def build_workflow(
             extra={
                 "documents": len(documents),
                 "from_results": len(search_results),
-                "success": fetch_success,
+                "success": len(documents),
                 "failed": fetch_failed,
                 "duration_ms": (perf_counter() - start) * 1000,
             },
@@ -184,6 +214,24 @@ def build_workflow(
         scored = store.query(query_text, top_k=top_k)
         retrieved = [sc.chunk for sc in scored]
         scores = [sc.score for sc in scored]
+        if ENABLE_RERANKER and retrieved:
+            reranked, rerank_scores = rerank_chunks(
+                query_text,
+                retrieved,
+                top_k=top_k,
+                run_id=state.get("run_id"),
+            )
+            if reranked:
+                retrieved = reranked
+                scores = rerank_scores
+                log.debug(
+                    "retrieve_reranked",
+                    extra={
+                        "original": len(scored),
+                        "reranked": len(reranked),
+                        "top_score": scores[0] if scores else None,
+                    },
+                )
         log.info(
             "retrieve_complete",
             extra={
@@ -304,9 +352,17 @@ def build_workflow(
         start = perf_counter()
         retrieved = state.get("retrieved", [])
         query = state.get("query", "")
+        history_summary = summarize_history(
+            state.get("conversation_history", []) or [],
+            max_chars=CONVERSATION_SUMMARY_CHARS,
+        )
         log.info(
             "generate_start",
-            extra={"query": query, "retrieved_chunks": len(retrieved)},
+            extra={
+                "query": query,
+                "retrieved_chunks": len(retrieved),
+                "history_context": bool(history_summary),
+            },
         )
         if not retrieved:
             log.warning("generate_no_context")
@@ -317,7 +373,12 @@ def build_workflow(
                 "citations": [],
                 "warnings": warnings,
             }
-        answer, citations = generate_answer(llm, query, retrieved)
+        answer, citations = generate_answer(
+            llm,
+            query,
+            retrieved,
+            conversation_context=history_summary,
+        )
         log.info(
             "generate_complete",
             extra={
@@ -334,15 +395,24 @@ def build_workflow(
         draft = state.get("draft_answer", "")
         query = state.get("query", "")
         retrieved = state.get("retrieved", [])
+        history_summary = summarize_history(
+            state.get("conversation_history", []) or [],
+            max_chars=CONVERSATION_SUMMARY_CHARS,
+        )
         log.info(
             "verify_start",
-            extra={"draft_length": len(draft), "retrieved_chunks": len(retrieved)},
+            extra={
+                "draft_length": len(draft),
+                "retrieved_chunks": len(retrieved),
+                "history_context": bool(history_summary),
+            },
         )
         verified = verify_answer(
             llm,
             draft,
             query,
             retrieved,
+            conversation_context=history_summary,
         )
         log.info(
             "verify_complete",
@@ -444,11 +514,46 @@ def run_research(
     embed_model: str = DEFAULT_EMBED_MODEL,
     searx_host: Optional[str] = None,
     top_k: int = TOP_K_RESULTS,
+    conversation_history: Optional[List[ConversationTurn]] = None,
 ) -> ResearchState:
     """Run the full pipeline and return a ResearchState object."""
     run_id = str(uuid4())
     logger = get_logger(__name__, run_id=run_id)
     overall_start = perf_counter()
+    cache = QueryCache(CACHE_DB_PATH, CACHE_TTL_SECONDS)
+    normalized_history: List[ConversationTurn] = []
+    if conversation_history:
+        for turn in conversation_history:
+            if isinstance(turn, ConversationTurn):
+                normalized_history.append(turn)
+            elif isinstance(turn, dict):  # type: ignore[unreachable]
+                normalized_history.append(ConversationTurn.from_dict(turn))
+    history_window = trim_history(
+        normalized_history, max_turns=CONVERSATION_MEMORY_TURNS
+    )
+    try:
+        cached_payload = cache.get(query)
+    except Exception as exc:  # pragma: no cover - defensive IO guard
+        logger.warning("query_cache_get_failed", extra={"error": str(exc)})
+        cached_payload = None
+
+    if cached_payload:
+        cached_state = decode_research_state(cached_payload)
+        if not cached_state.time_sensitive:
+            logger.info(
+                "run_research_cache_hit",
+                extra={"query": query, "run_id": cached_state.run_id},
+            )
+            cached_state.warnings = [
+                *cached_state.warnings,
+                "Response served from cache; rerun with a rephrase to refresh.",
+            ]
+            return cached_state
+        logger.info(
+            "run_research_cache_skip_time_sensitive",
+            extra={"query": query},
+        )
+
     logger.info(
         "run_research_start",
         extra={
@@ -458,6 +563,7 @@ def run_research(
             "has_llm": llm is not None,
             "has_custom_store": vector_store is not None,
             "searx_host": searx_host,
+            "history_turns": len(history_window),
         },
     )
     workflow = build_workflow(
@@ -487,9 +593,19 @@ def run_research(
         "qc_passes": 0,
         "qc_notes": [],
         "time_sensitive": False,
+        "conversation_history": history_window,
     }
     logger.debug("run_research_invoking_workflow")
     result = workflow.invoke(cast(GraphState, initial_state))
+    answer_text = result.get("verified_answer") or result.get("draft_answer", "")
+    updated_history = append_turn(
+        history_window,
+        query=query,
+        answer=answer_text,
+        citations=result.get("citations", []),
+        max_turns=CONVERSATION_MEMORY_TURNS,
+    )
+    result["conversation_history"] = updated_history
     duration_ms = (perf_counter() - overall_start) * 1000
     logger.info(
         "run_complete",
@@ -505,12 +621,11 @@ def run_research(
             "warnings": len(result.get("warnings", [])),
             "adaptive_iterations": result.get("adaptive_iterations", 0),
             "qc_passes": result.get("qc_passes", 0),
-            "answer_length": len(
-                result.get("verified_answer", "") or result.get("draft_answer", "")
-            ),
+            "answer_length": len(answer_text),
+            "history_turns": len(updated_history),
         },
     )
-    return ResearchState(
+    research_state = ResearchState(
         query=query,
         run_id=run_id,
         plan=result.get("plan", []),
@@ -526,4 +641,17 @@ def run_research(
         adaptive_iterations=result.get("adaptive_iterations", 0),
         qc_passes=result.get("qc_passes", 0),
         qc_notes=result.get("qc_notes", []),
+        time_sensitive=result.get("time_sensitive", False),
+        conversation_history=updated_history,
     )
+    if not research_state.time_sensitive and not research_state.errors:
+        payload = {
+            "version": CACHE_SCHEMA_VERSION,
+            "state": encode_research_state(research_state),
+        }
+        try:
+            cache.set(query, payload)
+        except Exception as exc:  # pragma: no cover - defensive IO guard
+            logger.warning("query_cache_set_failed", extra={"error": str(exc)})
+
+    return research_state

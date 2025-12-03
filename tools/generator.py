@@ -1,7 +1,7 @@
 """Answer generation and verification helpers."""
 
 import re
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from api.logging_setup import get_logger
 from api.state import Chunk
@@ -154,12 +154,19 @@ def _extract_meaningful_words(text: str) -> set:
 
 
 def generate_answer(
-    llm, query: str, retrieved: List[Chunk]
+    llm,
+    query: str,
+    retrieved: List[Chunk],
+    conversation_context: Optional[str] = None,
 ) -> Tuple[str, List[Dict[str, str]]]:
     logger = get_logger(__name__)
     logger.info(
         "generate_answer_start",
-        extra={"query": query, "retrieved_chunks": len(retrieved)},
+        extra={
+            "query": query,
+            "retrieved_chunks": len(retrieved),
+            "conversation_context": bool(conversation_context),
+        },
     )
     if not retrieved:
         logger.warning("generate_answer_no_context", extra={"query": query})
@@ -229,11 +236,21 @@ def generate_answer(
             "chunks_used": len(relevant_chunks),
         },
     )
+    context_instruction = ""
+    if conversation_context:
+        trimmed_context = " ".join(conversation_context.split())
+        if len(trimmed_context) > 800:
+            trimmed_context = trimmed_context[-800:]
+        context_instruction = (
+            "Prior conversation summary (use for continuity when relevant):\n"
+            f"{trimmed_context}\n\n"
+        )
+
     prompt = (
         "You are an evidence-based research assistant. Using only the context provided, "
         "write a concise answer to the user question. Cite supporting evidence inline using [n] "
         "where n matches the numbered context entries. Do not fabricate details.\n\n"
-        f"User question: {query}\n\nContext:\n{context_block}\n\nAnswer:"
+        f"{context_instruction}User question: {query}\n\nContext:\n{context_block}\n\nAnswer:"
     )
     logger.debug("generate_llm_call", extra={"prompt_length": len(prompt)})
     output = llm(prompt)[0]["generated_text"]
@@ -296,7 +313,13 @@ def _generate_fallback_answer(query: str, chunks: List[Chunk]) -> str:
     )
 
 
-def verify_answer(llm, draft: str, query: str, retrieved: List[Chunk]) -> str:
+def verify_answer(
+    llm,
+    draft: str,
+    query: str,
+    retrieved: List[Chunk],
+    conversation_context: Optional[str] = None,
+) -> str:
     logger = get_logger(__name__)
     logger.info(
         "verify_answer_start",
@@ -304,6 +327,7 @@ def verify_answer(llm, draft: str, query: str, retrieved: List[Chunk]) -> str:
             "query": query,
             "draft_length": len(draft),
             "retrieved_chunks": len(retrieved),
+            "conversation_context": bool(conversation_context),
         },
     )
     if not retrieved:
@@ -325,11 +349,21 @@ def verify_answer(llm, draft: str, query: str, retrieved: List[Chunk]) -> str:
         "verify_context_prepared",
         extra={"context_length": len(context_block)},
     )
+    context_instruction = ""
+    if conversation_context:
+        trimmed_context = " ".join(conversation_context.split())
+        if len(trimmed_context) > 800:
+            trimmed_context = trimmed_context[-800:]
+        context_instruction = (
+            "Prior conversation summary (maintain continuity where appropriate):\n"
+            f"{trimmed_context}\n\n"
+        )
+
     prompt = (
         "You are a fact-checking verifier. Review the draft answer against the provided context. "
         "Remove or correct any statements that are not directly supported. Preserve inline citations [n] "
         "only when the claim is supported by the corresponding context entry. Keep the answer concise.\n\n"
-        f"User question: {query}\n\nContext:\n{context_block}\n\nDraft answer:\n{draft}\n\nVerified answer:"
+        f"{context_instruction}User question: {query}\n\nContext:\n{context_block}\n\nDraft answer:\n{draft}\n\nVerified answer:"
     )
     logger.debug("verify_llm_call", extra={"prompt_length": len(prompt)})
     output = llm(prompt)[0]["generated_text"]

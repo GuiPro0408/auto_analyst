@@ -1,6 +1,7 @@
 """Shared data structures for the research pipeline."""
 
 from dataclasses import dataclass, field
+from time import time
 from typing import Any, Dict, List, Optional, TypedDict
 
 
@@ -36,6 +37,31 @@ class Chunk:
 
 
 @dataclass
+class ConversationTurn:
+    query: str
+    answer: str
+    citations: List[Dict[str, str]] = field(default_factory=list)
+    timestamp: float = field(default_factory=time)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "query": self.query,
+            "answer": self.answer,
+            "citations": self.citations,
+            "timestamp": self.timestamp,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Dict[str, Any]) -> "ConversationTurn":
+        return cls(
+            query=payload.get("query", ""),
+            answer=payload.get("answer", ""),
+            citations=payload.get("citations", []),
+            timestamp=float(payload.get("timestamp") or time()),
+        )
+
+
+@dataclass
 class ResearchState:
     query: str
     run_id: str = ""
@@ -52,6 +78,8 @@ class ResearchState:
     adaptive_iterations: int = 0
     qc_passes: int = 0
     qc_notes: List[str] = field(default_factory=list)
+    time_sensitive: bool = False
+    conversation_history: List[ConversationTurn] = field(default_factory=list)
 
     def add_error(self, message: str) -> None:
         self.errors.append(message)
@@ -75,3 +103,4 @@ class GraphState(TypedDict, total=False):
     qc_passes: int
     qc_notes: List[str]
     time_sensitive: bool  # Flag for time-sensitive queries
+    conversation_history: List[ConversationTurn]

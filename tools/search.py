@@ -2,8 +2,9 @@
 
 import time
 import warnings
+import xml.etree.ElementTree as ET
 from abc import ABC, abstractmethod
-from typing import Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import requests
 import wikipedia
@@ -282,6 +283,7 @@ class WikipediaBackend(SearchBackend):
 
 
 class SearxBackend(SearchBackend):
+
     """SearxNG search backend."""
 
     name = "searx"
@@ -330,10 +332,147 @@ class SearxBackend(SearchBackend):
         return results
 
 
+class ArxivBackend(SearchBackend):
+    """ArXiv API backend for scientific literature."""
+
+    name = "arxiv"
+
+    def search(
+        self,
+        query: str,
+        max_results: int = 5,
+        run_id: Optional[str] = None,
+    ) -> List[SearchResult]:
+        logger = get_logger(__name__, run_id=run_id)
+        logger.debug(
+            "arxiv_search_start",
+            extra={"query": query, "max_results": max_results},
+        )
+        params = {
+            "search_query": f"all:{query}",
+            "start": 0,
+            "max_results": max_results,
+        }
+        try:
+            resp = requests.get(
+                "https://export.arxiv.org/api/query",
+                params=params,
+                timeout=10,
+            )
+            resp.raise_for_status()
+        except Exception as exc:
+            logger.warning("arxiv_search_failed", extra={"error": str(exc)})
+            return []
+
+        entries: List[SearchResult] = []
+        try:
+            root = ET.fromstring(resp.text)
+        except ET.ParseError as exc:
+            logger.warning("arxiv_parse_failed", extra={"error": str(exc)})
+            return []
+        ns = {"atom": "http://www.w3.org/2005/Atom"}
+        for entry in root.findall("atom:entry", ns):
+            title = entry.findtext("atom:title", default="", namespaces=ns).strip()
+            summary = entry.findtext("atom:summary", default="", namespaces=ns).strip()
+            link = entry.findtext("atom:id", default="", namespaces=ns).strip()
+            entries.append(
+                SearchResult(
+                    url=link,
+                    title=title,
+                    snippet=summary,
+                    source="arxiv",
+                    content=summary,
+                )
+            )
+        logger.info(
+            "arxiv_search_complete",
+            extra={"results": len(entries), "query": query},
+        )
+        return entries
+
+    def supports_topic(self, topic: str) -> bool:
+        return topic in {"science", "technology"}
+
+
+class OpenAlexBackend(SearchBackend):
+    """OpenAlex search backend for scholarly works."""
+
+    name = "openalex"
+
+    @staticmethod
+    def _abstract_from_index(index: Optional[Dict[str, List[int]]]) -> str:
+        if not index:
+            return ""
+        max_pos = max((pos for positions in index.values() for pos in positions), default=-1)
+        if max_pos < 0:
+            return ""
+        tokens = ["" for _ in range(max_pos + 1)]
+        for word, positions in index.items():
+            for pos in positions:
+                if 0 <= pos < len(tokens):
+                    tokens[pos] = word
+        return " ".join(t for t in tokens if t).strip()
+
+    def search(
+        self,
+        query: str,
+        max_results: int = 5,
+        run_id: Optional[str] = None,
+    ) -> List[SearchResult]:
+        logger = get_logger(__name__, run_id=run_id)
+        logger.debug(
+            "openalex_search_start",
+            extra={"query": query, "max_results": max_results},
+        )
+        params = {
+            "search": query,
+            "per_page": max(1, max_results),
+            "sort": "relevance_score:desc",
+        }
+        try:
+            resp = requests.get(
+                "https://api.openalex.org/works",
+                params=params,
+                timeout=10,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as exc:
+            logger.warning("openalex_search_failed", extra={"error": str(exc)})
+            return []
+
+        results: List[SearchResult] = []
+        for item in data.get("results", [])[:max_results]:
+            title = item.get("display_name", "")
+            url = item.get("id", "")
+            snippet = self._abstract_from_index(item.get("abstract_inverted_index"))
+            if not snippet:
+                snippet = item.get("primary_topic", {}).get("display_name", "")
+            results.append(
+                SearchResult(
+                    url=url,
+                    title=title,
+                    snippet=snippet,
+                    source="openalex",
+                    content=snippet,
+                )
+            )
+        logger.info(
+            "openalex_search_complete",
+            extra={"results": len(results), "query": query},
+        )
+        return results
+
+    def supports_topic(self, topic: str) -> bool:
+        return topic in {"science", "technology"}
+
+
 # Registry of available search backends
 _BACKEND_REGISTRY: dict[str, type[SearchBackend]] = {
     "duckduckgo": DuckDuckGoBackend,
     "wikipedia": WikipediaBackend,
+    "arxiv": ArxivBackend,
+    "openalex": OpenAlexBackend,
 }
 
 
@@ -559,51 +698,49 @@ def run_search_tasks(
     )
     all_results: List[SearchResult] = []
     warnings: List[str] = []
+    backend_names = [backend.strip().lower() for backend in SEARCH_BACKENDS if backend.strip()]
+    backend_instances: List[SearchBackend] = []
+    for name in backend_names:
+        if name == "searx" and not searx_host:
+            logger.info("search_backend_skip_searx_no_host")
+            continue
+        backend = get_backend(name, host=searx_host)
+        if not backend:
+            logger.warning("search_backend_unknown", extra={"backend": name})
+            continue
+        backend_instances.append(backend)
+
     for idx, task in enumerate(tasks):
         logger.debug(
             "search_task_processing",
             extra={"task_index": idx, "query": task.text, "rationale": task.rationale},
         )
         task_results_before = len(all_results)
-        if "duckduckgo" in SEARCH_BACKENDS:
-            ddg_results = search_duckduckgo(
-                task.text, max_results=max_results, run_id=run_id
+        topic = detect_query_topic(task.text)
+        for backend in backend_instances:
+            if topic and not backend.supports_topic(topic):
+                logger.debug(
+                    "search_backend_skipped_topic",
+                    extra={"backend": backend.name, "topic": topic},
+                )
+                continue
+            backend_max = max_results
+            if backend.name == "wikipedia":
+                backend_max = max(max_results // 2, 1)
+            results = backend.search(
+                task.text,
+                max_results=backend_max,
+                run_id=run_id,
             )
             logger.debug(
                 "search_backend_complete",
                 extra={
-                    "backend": "duckduckgo",
-                    "results": len(ddg_results),
+                    "backend": backend.name,
+                    "results": len(results),
                     "task_index": idx,
                 },
             )
-            all_results.extend(ddg_results)
-        if "wikipedia" in SEARCH_BACKENDS:
-            wiki_results = search_wikipedia(
-                task.text, max_results=max_results // 2 or 1, run_id=run_id
-            )
-            logger.debug(
-                "search_backend_complete",
-                extra={
-                    "backend": "wikipedia",
-                    "results": len(wiki_results),
-                    "task_index": idx,
-                },
-            )
-            all_results.extend(wiki_results)
-        if "searx" in SEARCH_BACKENDS and searx_host:
-            searx_results = search_searx(
-                task.text, host=searx_host, max_results=max_results, run_id=run_id
-            )
-            logger.debug(
-                "search_backend_complete",
-                extra={
-                    "backend": "searx",
-                    "results": len(searx_results),
-                    "task_index": idx,
-                },
-            )
-            all_results.extend(searx_results)
+            all_results.extend(results)
         logger.debug(
             "search_task_complete",
             extra={

@@ -1,13 +1,19 @@
 """Fetcher that retrieves web pages and PDFs, respecting robots.txt."""
 
-from typing import Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import List, Optional, Tuple
 import time
 from urllib.parse import urlparse
 from urllib.robotparser import RobotFileParser
 
 import requests
 
-from api.config import USER_AGENT, FETCH_BACKOFF_SECONDS, FETCH_RETRIES
+from api.config import (
+    FETCH_BACKOFF_SECONDS,
+    FETCH_CONCURRENCY,
+    FETCH_RETRIES,
+    USER_AGENT,
+)
 from api.logging_setup import get_logger
 from api.state import Document, SearchResult
 from tools.parser import parse_html, parse_pdf
@@ -141,3 +147,50 @@ def fetch_url(
         ),
         None,
     )
+
+
+def fetch_documents_parallel(
+    results: List[SearchResult],
+    max_workers: int = FETCH_CONCURRENCY,
+    timeout: int = 15,
+    run_id: Optional[str] = None,
+) -> Tuple[List[Document], List[str]]:
+    """Fetch multiple results concurrently using a thread pool."""
+
+    logger = get_logger(__name__, run_id=run_id)
+    if not results:
+        return [], []
+
+    documents: List[Document] = []
+    warnings: List[str] = []
+
+    logger.info(
+        "fetch_parallel_start",
+        extra={"count": len(results), "max_workers": max_workers},
+    )
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_map = {
+            executor.submit(fetch_url, res, timeout, run_id): res for res in results
+        }
+        for future in as_completed(future_map):
+            res = future_map[future]
+            try:
+                doc, warn = future.result()
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.exception(
+                    "fetch_parallel_exception",
+                    extra={"url": res.url, "error": str(exc)},
+                )
+                warnings.append(f"{res.url}: parallel fetch error {exc}")
+                continue
+            if doc:
+                documents.append(doc)
+            if warn:
+                warnings.append(f"{res.url}: {warn}")
+
+    logger.info(
+        "fetch_parallel_complete",
+        extra={"documents": len(documents), "warnings": len(warnings)},
+    )
+    return documents, warnings
