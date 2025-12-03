@@ -10,3 +10,9 @@ venv/
 data/
 chromadb/
 !data/sample_eval.json
+
+# Local secrets & logs
+.env
+.env.*
+auto_analyst.log
+*.log

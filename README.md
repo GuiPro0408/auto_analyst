@@ -159,6 +159,23 @@ streamlit run ui/app.py  # http://localhost:8501
 | `AUTO_ANALYST_ADAPTIVE_MAX_ITERS`| `2`                                | Adaptive search cycles        |
 | `AUTO_ANALYST_QC_MAX_PASSES`     | `1`                                | Quality control passes        |
 
+### API keys & secrets
+
+Some backends require API credentials that **must be supplied through environment variables** (never hard-code them):
+
+- `GOOGLE_API_KEY` — required for the Gemini backend (`AUTO_ANALYST_LLM_BACKEND=gemini`).
+- `HUGGINGFACE_API_TOKEN` — required when using the Hugging Face Inference backend.
+
+Create or edit your local `.env` file and add placeholders:
+
+```
+GOOGLE_API_KEY=YOUR_GOOGLE_API_KEY
+HUGGINGFACE_API_TOKEN=YOUR_HF_API_TOKEN
+AUTO_ANALYST_LLM_BACKEND=gemini
+```
+
+Keep the `.env` file out of source control when filling in real credentials, and rotate any keys that may have been exposed previously.
+
 ## Commands
 
 ```bash
