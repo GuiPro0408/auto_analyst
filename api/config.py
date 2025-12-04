@@ -23,7 +23,7 @@ HUGGINGFACE_INFERENCE_MODEL = os.getenv(
 )
 VECTOR_STORE_BACKEND = os.getenv("AUTO_ANALYST_VECTOR_STORE", "chroma")
 SEARCH_BACKENDS = os.getenv(
-    "AUTO_ANALYST_SEARCH_BACKENDS", "duckduckgo,wikipedia"
+    "AUTO_ANALYST_SEARCH_BACKENDS", "gemini_grounding"
 ).split(",")
 
 # INT8 quantization is disabled by default because it's slow on Pascal GPUs (GTX 10xx).

@@ -104,3 +104,5 @@ class GraphState(TypedDict, total=False):
     qc_notes: List[str]
     time_sensitive: bool  # Flag for time-sensitive queries
     conversation_history: List[ConversationTurn]
+    grounded_answer: str  # Direct answer from Gemini grounding
+    grounded_sources: List[Chunk]  # Sources from grounding for citations

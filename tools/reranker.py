@@ -1,5 +1,6 @@
 """Cross-encoder based reranking for retrieved chunks."""
 
+import os
 from functools import lru_cache
 from typing import List, Optional, Sequence, Tuple
 
@@ -9,12 +10,17 @@ from api.config import ENABLE_RERANKER, RERANK_MODEL_NAME
 from api.logging_setup import get_logger
 from api.state import Chunk
 
+# Force CPU for reranker to avoid CUDA compatibility issues with older GPUs
+RERANKER_DEVICE = os.getenv("AUTO_ANALYST_RERANKER_DEVICE", "cpu")
+
 
 @lru_cache(maxsize=1)
 def load_reranker(model_name: str = RERANK_MODEL_NAME) -> CrossEncoder:
     logger = get_logger(__name__)
-    logger.info("reranker_load_start", extra={"model_name": model_name})
-    model = CrossEncoder(model_name)
+    logger.info(
+        "reranker_load_start", extra={"model_name": model_name, "device": RERANKER_DEVICE}
+    )
+    model = CrossEncoder(model_name, device=RERANKER_DEVICE)
     logger.info("reranker_load_complete", extra={"model_name": model_name})
     return model
 

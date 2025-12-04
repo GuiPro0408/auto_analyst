@@ -31,10 +31,10 @@ from api.memory import (
     summarize_history,
     trim_history,
 )
-from api.state import ConversationTurn, Document, GraphState, ResearchState
+from api.state import Chunk, ConversationTurn, Document, GraphState, ResearchState
 from tools.adaptive_research import assess_context, refine_plan
 from tools.fetcher import fetch_documents_parallel, fetch_url
-from tools.generator import generate_answer, verify_answer
+from tools.generator import build_citations, generate_answer, verify_answer
 from tools.planner import plan_query
 from tools.quality_control import assess_answer, improve_answer
 from tools.retriever import build_vector_store, chunk_documents
@@ -126,7 +126,36 @@ def build_workflow(
         )
         state_warnings = state.get("warnings", [])
         state_warnings.extend(warnings)
-        return {"search_results": results, "warnings": state_warnings}
+
+        # Check if we got a grounded answer directly from Gemini
+        grounded_answer = ""
+        grounded_sources: List[Chunk] = []
+        for res in results:
+            if res.source == "gemini_grounding" and res.content:
+                grounded_answer = res.content
+                # Create chunks from all grounding results for citations
+                for idx, r in enumerate(results):
+                    if r.source == "gemini_grounding" and r.url:
+                        grounded_sources.append(
+                            Chunk(
+                                id=f"grounding_{idx}",
+                                text=r.snippet or r.title,
+                                metadata={
+                                    "url": r.url,
+                                    "title": r.title,
+                                    "source": "gemini_grounding",
+                                    "media_type": "text",
+                                },
+                            )
+                        )
+                break
+
+        return {
+            "search_results": results,
+            "warnings": state_warnings,
+            "grounded_answer": grounded_answer,
+            "grounded_sources": grounded_sources,
+        }
 
     def fetch_node(state: GraphState) -> GraphState:
         log = get_logger("api.graph.fetch", run_id=state.get("run_id"))
@@ -356,6 +385,27 @@ def build_workflow(
             state.get("conversation_history", []) or [],
             max_chars=CONVERSATION_SUMMARY_CHARS,
         )
+
+        # Check if we have a grounded answer from Gemini (fast path)
+        grounded_answer = state.get("grounded_answer", "")
+        grounded_sources = state.get("grounded_sources", [])
+
+        if grounded_answer and grounded_sources:
+            log.info(
+                "generate_using_grounded_answer",
+                extra={
+                    "answer_length": len(grounded_answer),
+                    "sources_count": len(grounded_sources),
+                    "duration_ms": (perf_counter() - start) * 1000,
+                },
+            )
+            citations = build_citations(grounded_sources)
+            return {
+                "draft_answer": grounded_answer,
+                "citations": citations,
+                "retrieved": grounded_sources,  # Use grounded sources for verification
+            }
+
         log.info(
             "generate_start",
             extra={
@@ -594,6 +644,8 @@ def run_research(
         "qc_notes": [],
         "time_sensitive": False,
         "conversation_history": history_window,
+        "grounded_answer": "",
+        "grounded_sources": [],
     }
     logger.debug("run_research_invoking_workflow")
     result = workflow.invoke(cast(GraphState, initial_state))

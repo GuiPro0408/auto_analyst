@@ -1,14 +1,11 @@
-"""Search tools using only free endpoints."""
+"""Search tools using Gemini grounding and optional fallback backends."""
 
 import time
-import warnings
 import xml.etree.ElementTree as ET
 from abc import ABC, abstractmethod
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import requests
-import wikipedia
-from duckduckgo_search import DDGS
 
 from api.config import (
     SEARCH_BACKENDS,
@@ -17,14 +14,7 @@ from api.config import (
 )
 from api.logging_setup import get_logger
 from api.state import SearchQuery, SearchResult
-
-# Suppress rename warning emitted by duckduckgo_search package
-warnings.filterwarnings(
-    "ignore",
-    message="This package (`duckduckgo_search`) has been renamed to `ddgs`!",
-    category=RuntimeWarning,
-    module="duckduckgo_search",
-)
+from tools.gemini_grounding import GroundingResult, query_with_grounding
 
 BLOCKED_DOMAINS = {
     "support.google.com",
@@ -148,142 +138,7 @@ class SearchBackend(ABC):
         return True  # Default: supports all topics
 
 
-class DuckDuckGoBackend(SearchBackend):
-    """DuckDuckGo search backend."""
-
-    name = "duckduckgo"
-
-    def search(
-        self,
-        query: str,
-        max_results: int = 5,
-        run_id: Optional[str] = None,
-    ) -> List[SearchResult]:
-        logger = get_logger(__name__, run_id=run_id)
-        logger.debug(
-            "duckduckgo_search_start",
-            extra={"query": query, "max_results": max_results},
-        )
-        results: List[SearchResult] = []
-        with DDGS() as ddgs:
-            for attempt in range(1, SEARCH_RETRIES + 2):
-                try:
-                    for item in ddgs.text(query, max_results=max_results):
-                        url = item.get("href") or ""
-                        title = item.get("title") or ""
-                        snippet = item.get("body") or ""
-                        if not url:
-                            logger.debug(
-                                "duckduckgo_skip_no_url", extra={"title": title}
-                            )
-                            continue
-                        logger.debug(
-                            "duckduckgo_result_found",
-                            extra={"url": url, "title": title[:50]},
-                        )
-                        results.append(
-                            SearchResult(
-                                url=url,
-                                title=title,
-                                snippet=snippet,
-                                source="duckduckgo",
-                            )
-                        )
-                    break
-                except Exception as exc:
-                    logger.warning(
-                        "duckduckgo_search_retry",
-                        extra={"attempt": attempt, "error": str(exc)},
-                    )
-                    time.sleep(SEARCH_RATE_LIMIT_SECONDS)
-        logger.info(
-            "duckduckgo_search_complete",
-            extra={"results": len(results), "query": query},
-        )
-        return results
-
-
-class WikipediaBackend(SearchBackend):
-    """Wikipedia search backend with full summaries."""
-
-    name = "wikipedia"
-
-    def search(
-        self,
-        query: str,
-        max_results: int = 3,
-        run_id: Optional[str] = None,
-    ) -> List[SearchResult]:
-        """Search Wikipedia and return results with full summaries as content.
-
-        Wikipedia blocks most user agents via robots.txt, so we use the wikipedia
-        API to get summaries directly rather than trying to fetch pages later.
-        """
-        logger = get_logger(__name__, run_id=run_id)
-        logger.debug(
-            "wikipedia_search_start",
-            extra={"query": query, "max_results": max_results},
-        )
-        results: List[SearchResult] = []
-        for attempt in range(1, SEARCH_RETRIES + 2):
-            try:
-                titles = wikipedia.search(query, results=max_results)
-                logger.debug(
-                    "wikipedia_titles_found",
-                    extra={"titles": titles, "count": len(titles)},
-                )
-                for title in titles:
-                    try:
-                        # Get a longer summary (5 sentences) since we'll use this as content
-                        summary = wikipedia.summary(
-                            title, sentences=5, auto_suggest=False
-                        )
-                        logger.debug(
-                            "wikipedia_summary_fetched",
-                            extra={"title": title, "chars": len(summary)},
-                        )
-                    except Exception as exc:
-                        logger.debug(
-                            "wikipedia_summary_failed",
-                            extra={"title": title, "error": str(exc)},
-                        )
-                        summary = ""
-                    if not summary:
-                        logger.debug(
-                            "wikipedia_skip_no_summary", extra={"title": title}
-                        )
-                        continue  # Skip results without content
-                    page_url = (
-                        f"https://en.wikipedia.org/wiki/{title.replace(' ', '_')}"
-                    )
-                    results.append(
-                        SearchResult(
-                            url=page_url,
-                            title=title,
-                            snippet=summary,
-                            source="wikipedia",
-                            # Store full content so we can use it without fetching
-                            content=summary,
-                        )
-                    )
-                break
-            except Exception as exc:
-                logger.warning(
-                    "wikipedia_search_retry",
-                    extra={"attempt": attempt, "error": str(exc)},
-                )
-                time.sleep(SEARCH_RATE_LIMIT_SECONDS)
-        logger.info("wikipedia_search_complete", extra={"results": len(results)})
-        return results
-
-    def supports_topic(self, topic: str) -> bool:
-        """Wikipedia is good for factual/encyclopedic content, less for current events."""
-        # Wikipedia is less suitable for very current/time-sensitive topics
-        return topic not in {"news"}
-
-
 class SearxBackend(SearchBackend):
-
     """SearxNG search backend."""
 
     name = "searx"
@@ -403,7 +258,9 @@ class OpenAlexBackend(SearchBackend):
     def _abstract_from_index(index: Optional[Dict[str, List[int]]]) -> str:
         if not index:
             return ""
-        max_pos = max((pos for positions in index.values() for pos in positions), default=-1)
+        max_pos = max(
+            (pos for positions in index.values() for pos in positions), default=-1
+        )
         if max_pos < 0:
             return ""
         tokens = ["" for _ in range(max_pos + 1)]
@@ -467,10 +324,93 @@ class OpenAlexBackend(SearchBackend):
         return topic in {"science", "technology"}
 
 
+class GeminiGroundingBackend(SearchBackend):
+    """Gemini with Google Search grounding for web-augmented search.
+
+    This backend uses Gemini's native Google Search grounding to get fresh
+    web results. It is the primary search backend for Auto-Analyst.
+    """
+
+    name = "gemini_grounding"
+
+    def search(
+        self,
+        query: str,
+        max_results: int = 5,
+        run_id: Optional[str] = None,
+    ) -> List[SearchResult]:
+        """Search using Gemini's Google Search grounding.
+
+        Args:
+            query: Search query string.
+            max_results: Maximum results (note: grounding returns variable results).
+            run_id: Optional run ID for logging correlation.
+
+        Returns:
+            List of SearchResult from grounding sources.
+        """
+        logger = get_logger(__name__, run_id=run_id)
+        logger.debug(
+            "gemini_grounding_search_start",
+            extra={"query": query, "max_results": max_results},
+        )
+
+        result: GroundingResult = query_with_grounding(query, run_id=run_id)
+
+        if not result.success:
+            logger.warning(
+                "gemini_grounding_search_failed",
+                extra={"error": result.error, "query": query},
+            )
+            return []
+
+        results: List[SearchResult] = []
+        for source in result.sources[:max_results]:
+            results.append(
+                SearchResult(
+                    url=source.url,
+                    title=source.title,
+                    snippet=(
+                        source.snippet or result.answer[:200] if result.answer else ""
+                    ),
+                    source="gemini_grounding",
+                    # Store the grounded answer as content for direct use
+                    content=result.answer if len(results) == 0 else "",
+                )
+            )
+
+        # If grounding returned an answer but no sources, create a synthetic result
+        if result.answer and not results:
+            logger.debug("gemini_grounding_no_sources_synthetic_result")
+            results.append(
+                SearchResult(
+                    url="",
+                    title="Gemini Grounded Response",
+                    snippet=result.answer[:300],
+                    source="gemini_grounding",
+                    content=result.answer,
+                )
+            )
+
+        logger.info(
+            "gemini_grounding_search_complete",
+            extra={
+                "results": len(results),
+                "query": query,
+                "web_queries": result.web_search_queries,
+                "answer_length": len(result.answer) if result.answer else 0,
+            },
+        )
+        return results
+
+    def supports_topic(self, topic: str) -> bool:
+        """Gemini grounding supports all topics via Google Search."""
+        return True
+
+
 # Registry of available search backends
 _BACKEND_REGISTRY: dict[str, type[SearchBackend]] = {
-    "duckduckgo": DuckDuckGoBackend,
-    "wikipedia": WikipediaBackend,
+    "gemini_grounding": GeminiGroundingBackend,
     "arxiv": ArxivBackend,
     "openalex": OpenAlexBackend,
 }
@@ -511,28 +451,6 @@ def detect_query_topic(query: str) -> Optional[str]:
             best_topic = topic
 
     return best_topic if best_overlap >= 1 else None
-
-
-# Legacy function wrappers for backward compatibility
-def search_duckduckgo(
-    query: str, max_results: int = 5, run_id: Optional[str] = None
-) -> List[SearchResult]:
-    backend = DuckDuckGoBackend()
-    return backend.search(query, max_results, run_id)
-
-
-def search_wikipedia(
-    query: str, max_results: int = 3, run_id: Optional[str] = None
-) -> List[SearchResult]:
-    backend = WikipediaBackend()
-    return backend.search(query, max_results, run_id)
-
-
-def search_searx(
-    query: str, host: str, max_results: int = 5, run_id: Optional[str] = None
-) -> List[SearchResult]:
-    backend = SearxBackend(host=host)
-    return backend.search(query, max_results, run_id)
 
 
 def dedupe_results(results: Iterable[SearchResult]) -> List[SearchResult]:
@@ -652,8 +570,8 @@ def filter_results(query: str, results: List[SearchResult]) -> List[SearchResult
         # Include result if:
         # 1. There's keyword overlap, OR
         # 2. No keywords could be extracted from query, OR
-        # 3. The result is from Wikipedia (generally reliable and on-topic)
-        if overlap or not query_keywords or res.source == "wikipedia":
+        # 3. The result is from gemini_grounding (already relevance-filtered)
+        if overlap or not query_keywords or res.source == "gemini_grounding":
             filtered.append(res)
         else:
             irrelevant_count += 1
@@ -698,7 +616,9 @@ def run_search_tasks(
     )
     all_results: List[SearchResult] = []
     warnings: List[str] = []
-    backend_names = [backend.strip().lower() for backend in SEARCH_BACKENDS if backend.strip()]
+    backend_names = [
+        backend.strip().lower() for backend in SEARCH_BACKENDS if backend.strip()
+    ]
     backend_instances: List[SearchBackend] = []
     for name in backend_names:
         if name == "searx" and not searx_host:
@@ -724,12 +644,9 @@ def run_search_tasks(
                     extra={"backend": backend.name, "topic": topic},
                 )
                 continue
-            backend_max = max_results
-            if backend.name == "wikipedia":
-                backend_max = max(max_results // 2, 1)
             results = backend.search(
                 task.text,
-                max_results=backend_max,
+                max_results=max_results,
                 run_id=run_id,
             )
             logger.debug(
