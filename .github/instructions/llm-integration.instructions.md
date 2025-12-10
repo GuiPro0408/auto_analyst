@@ -45,9 +45,16 @@ prompt = (
 ```python
 prompt = (
     "You are an evidence-based research assistant. Using only the context provided, "
-    "write a concise answer to the user question. Cite supporting evidence inline using [n] "
-    "where n matches the numbered context entries. Do not fabricate details.\n\n"
+    "write a comprehensive, well-structured answer to the user question.\n\n"
+    "Guidelines:\n"
+    "- Organize your response with clear sections using **bold headers** when appropriate\n"
+    "- Provide detailed explanations, not just brief summaries\n"
+    "- Use bullet points or numbered lists to present multiple items clearly\n"
+    "- Cite supporting evidence inline using [n] where n matches the numbered context entries\n"
+    "- Include relevant details like dates, names, descriptions when available\n"
+    "- Do not fabricate details - only use information from the provided context\n\n"
     f"User question: {query}\n\nContext:\n{context_block}\n\nAnswer:"
+)
 )
 ```
 
@@ -56,8 +63,10 @@ prompt = (
 ```python
 prompt = (
     "You are a fact-checking verifier. Review the draft answer against the provided context. "
-    "Remove or correct any statements that are not directly supported. Preserve inline citations [n] "
-    "only when the claim is supported by the corresponding context entry. Keep the answer concise.\n\n"
+    "Remove or correct any statements that are not directly supported by the context. "
+    "Preserve the structure, formatting (headers, bullet points, lists), and level of detail from the draft. "
+    "Keep inline citations [n] only when the claim is supported by the corresponding context entry. "
+    "Do not shorten or oversimplify the answer - maintain comprehensive coverage.\n\n"
     f"User question: {query}\n\nContext:\n{context_block}\n\nDraft answer:\n{draft}\n\nVerified answer:"
 )
 ```
@@ -122,7 +131,7 @@ Generation parameters in `api/config.py`:
 
 ```python
 GENERATION_KWARGS = {
-    "max_new_tokens": 512,
+    "max_new_tokens": 1024,
     "temperature": 0.4,
     "do_sample": True,
 }
