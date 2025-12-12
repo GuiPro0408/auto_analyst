@@ -78,8 +78,14 @@ def test_smart_search_end_to_end():
         SearchResult(url="https://example.com", title="Test", snippet="Test content"),
     ]
 
+    # Create a mock TavilyBackend that returns fake results
+    class MockTavilyBackend:
+        def search(self, **kwargs):
+            return (fake_results, [])
+
     with patch("tools.smart_search.load_llm", return_value=FakeLLM(analysis_response)):
-        with patch("tools.smart_search.run_search_tasks", return_value=(fake_results, [])):
+        # Patch TavilyBackend at the source (tools.search) since it's imported inside the function
+        with patch("tools.search.TavilyBackend", MockTavilyBackend):
             with patch(
                 "tools.smart_search.validate_results_with_llm",
                 return_value=fake_results,

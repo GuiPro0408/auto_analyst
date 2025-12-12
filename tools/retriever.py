@@ -24,7 +24,7 @@ def build_vector_store(
     )
     if backend == "faiss":
         logger.debug("vector_store_using_faiss")
-        return FaissVectorStore(model_name=model_name)
+        return FaissVectorStore(model_name=model_name, run_id=run_id)
     logger.debug("vector_store_using_chroma")
     return ChromaVectorStore(model_name=model_name, run_id=run_id)
 

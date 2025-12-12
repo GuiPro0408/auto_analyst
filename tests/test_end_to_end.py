@@ -20,7 +20,7 @@ class FakeVectorStore(VectorStore):
     def upsert(self, chunks):
         self.chunks.extend(chunks)
 
-    def query(self, text, top_k: int = 5):
+    def query(self, text, top_k: int = 5, *, run_id: str | None = None):
         return [ScoredChunk(chunk=c, score=1.0) for c in self.chunks[:top_k]]
 
 

@@ -1,6 +1,6 @@
 """FAISS-based in-memory vector store."""
 
-from typing import List
+from typing import List, Optional
 
 import faiss
 import numpy as np
@@ -17,21 +17,28 @@ def _normalize(vecs: np.ndarray) -> np.ndarray:
 
 
 class FaissVectorStore(VectorStore):
-    def __init__(self, model_name: str) -> None:
-        logger = get_logger(__name__)
+    """FAISS-based in-memory vector store.
+
+    Uses FAISS IndexFlatIP for inner product similarity search.
+    Vectors are normalized for cosine similarity behavior.
+    """
+
+    def __init__(self, model_name: str, run_id: Optional[str] = None) -> None:
+        self.run_id = run_id
+        logger = get_logger(__name__, run_id=run_id)
         logger.info("faiss_store_init", extra={"model_name": model_name})
         self.embedder = load_embedding_model(model_name=model_name)
         sample = self.embedder.encode(
             ["sample"], convert_to_numpy=True, normalize_embeddings=True
         )
-        dim = sample.shape[1] if len(sample.shape) > 1 else sample.shape[0]
+        dim = int(sample.shape[1]) if sample.ndim > 1 else int(sample.shape[0])
         self.index = faiss.IndexFlatIP(dim)
         self.chunks: List[Chunk] = []
         self.embeddings = np.empty((0, dim), dtype="float32")
         logger.debug("faiss_store_ready", extra={"embedding_dim": dim})
 
     def clear(self) -> None:
-        logger = get_logger(__name__)
+        logger = get_logger(__name__, run_id=self.run_id)
         logger.info("faiss_store_clear", extra={"previous_chunks": len(self.chunks)})
         self.index.reset()
         self.chunks = []
@@ -41,7 +48,7 @@ class FaissVectorStore(VectorStore):
         )
 
     def upsert(self, chunks: List[Chunk]) -> None:
-        logger = get_logger(__name__)
+        logger = get_logger(__name__, run_id=self.run_id)
         if not chunks:
             logger.debug("faiss_upsert_empty")
             return
@@ -53,7 +60,7 @@ class FaissVectorStore(VectorStore):
         new_vectors = _normalize(new_vectors.astype("float32"))
         if new_vectors.ndim == 1:
             new_vectors = new_vectors.reshape(1, -1)
-        self.index.add(new_vectors.astype("float32"))
+        self.index.add(new_vectors.astype("float32"))  # type: ignore[call-arg]
         self.chunks.extend(chunks)
         if self.embeddings.size == 0:
             self.embeddings = new_vectors.astype("float32")
@@ -66,8 +73,10 @@ class FaissVectorStore(VectorStore):
             extra={"chunk_count": len(chunks), "total_chunks": len(self.chunks)},
         )
 
-    def query(self, text: str, top_k: int = 5) -> List[ScoredChunk]:
-        logger = get_logger(__name__)
+    def query(
+        self, text: str, top_k: int = 5, *, run_id: Optional[str] = None
+    ) -> List[ScoredChunk]:
+        logger = get_logger(__name__, run_id=run_id or self.run_id)
         logger.debug(
             "faiss_query_start", extra={"query_length": len(text), "top_k": top_k}
         )
@@ -77,7 +86,7 @@ class FaissVectorStore(VectorStore):
         query_vec = _normalize(query_vec.astype("float32"))
         if query_vec.ndim == 1:
             query_vec = query_vec.reshape(1, -1)
-        scores, indices = self.index.search(query_vec.astype("float32"), top_k)
+        scores, indices = self.index.search(query_vec.astype("float32"), top_k)  # type: ignore[call-arg]
         scored: List[ScoredChunk] = []
         for score, idx in zip(scores[0], indices[0]):
             if idx == -1 or idx >= len(self.chunks):

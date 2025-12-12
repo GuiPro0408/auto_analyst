@@ -138,3 +138,20 @@ RERANK_MODEL_NAME = os.getenv(
 # =============================================================================
 CONVERSATION_MEMORY_TURNS = int(os.getenv("AUTO_ANALYST_MEMORY_TURNS", "5"))
 CONVERSATION_SUMMARY_CHARS = int(os.getenv("AUTO_ANALYST_MEMORY_SUMMARY_CHARS", "1200"))
+
+# =============================================================================
+# ADAPTIVE RESEARCH CONFIGURATION
+# =============================================================================
+MIN_RELEVANCE_THRESHOLD = float(
+    os.getenv("AUTO_ANALYST_MIN_RELEVANCE_THRESHOLD", "0.3")
+)
+
+# =============================================================================
+# FETCH CONFIGURATION
+# =============================================================================
+FETCH_TIMEOUT = int(os.getenv("AUTO_ANALYST_FETCH_TIMEOUT", "15"))
+
+# =============================================================================
+# ROBOTS.TXT CACHE CONFIGURATION
+# =============================================================================
+ROBOTS_CACHE_TTL_SECONDS = int(os.getenv("AUTO_ANALYST_ROBOTS_CACHE_TTL", "1800"))

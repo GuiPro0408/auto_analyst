@@ -2,13 +2,11 @@
 
 from typing import List, Optional, Tuple
 
+from api.config import MIN_RELEVANCE_THRESHOLD
 from api.logging_setup import get_logger
 from api.state import Chunk, SearchQuery
 from tools.planner import heuristic_plan
 from tools.topic_utils import detect_query_topic
-
-# Minimum average similarity score to consider context relevant
-MIN_RELEVANCE_THRESHOLD = 0.3
 
 
 def assess_context(

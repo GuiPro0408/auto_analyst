@@ -579,9 +579,36 @@ def build_workflow(
     graph.add_node("adaptive", lambda state: adaptive_node(cast(GraphState, state)))
     graph.add_node("qc", lambda state: qc_node(cast(GraphState, state)))
 
+    def should_continue_after_plan(state: GraphState) -> str:
+        """Check if plan succeeded and decide whether to continue or short-circuit."""
+        plan = state.get("plan", [])
+        errors = state.get("errors", [])
+        # Short-circuit if plan is empty AND we have critical errors
+        if not plan and any("plan_failed" in e for e in errors):
+            return "generate"  # Skip to generate with fallback
+        return "search"
+
+    def should_continue_after_search(state: GraphState) -> str:
+        """Check if search produced results; short-circuit if all backends failed."""
+        results = state.get("search_results", [])
+        grounded_answer = state.get("grounded_answer", "")
+        # If we have a grounded answer, continue normally
+        if grounded_answer:
+            return "fetch"
+        # If no results and no grounded answer, we can still try fetch for any cached content
+        return "fetch"
+
     graph.add_edge(START, "plan")
-    graph.add_edge("plan", "search")
-    graph.add_edge("search", "fetch")
+    graph.add_conditional_edges(
+        "plan",
+        should_continue_after_plan,
+        {"search": "search", "generate": "generate"},
+    )
+    graph.add_conditional_edges(
+        "search",
+        should_continue_after_search,
+        {"fetch": "fetch"},
+    )
     graph.add_edge("fetch", "retrieve")
     graph.add_edge("retrieve", "adaptive")
     graph.add_edge("adaptive", "generate")

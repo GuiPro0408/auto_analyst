@@ -163,6 +163,7 @@ def build_research_state(
         documents=result.get("documents", []),
         chunks=result.get("chunks", []),
         retrieved=retrieved,
+        retrieval_scores=result.get("retrieval_scores", []),
         draft_answer=draft_answer,
         verified_answer=verified_answer,
         citations=citations,
@@ -173,6 +174,8 @@ def build_research_state(
         qc_notes=result.get("qc_notes", []),
         time_sensitive=result.get("time_sensitive", False),
         conversation_history=conversation_history,
+        grounded_answer=grounded_answer,
+        grounded_sources=grounded_sources,
     )
 
 

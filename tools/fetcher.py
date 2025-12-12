@@ -13,14 +13,14 @@ from api.config import (
     FETCH_BACKOFF_SECONDS,
     FETCH_CONCURRENCY,
     FETCH_RETRIES,
+    FETCH_TIMEOUT,
+    ROBOTS_CACHE_TTL_SECONDS,
     ROBOTS_ON_ERROR,
     USER_AGENT,
 )
 from api.logging_setup import get_logger
 from api.state import Document, SearchResult
 from tools.parser import parse_html, parse_pdf
-
-ROBOTS_CACHE_TTL_SECONDS = 1800  # 30 minutes
 _robots_cache: Dict[str, Tuple[bool, float]] = {}
 _robots_lock = threading.Lock()
 
@@ -86,7 +86,7 @@ is_allowed_to_fetch = is_allowed
 
 
 def fetch_url(
-    result: SearchResult, timeout: int = 15, run_id: Optional[str] = None
+    result: SearchResult, timeout: int = FETCH_TIMEOUT, run_id: Optional[str] = None
 ) -> Tuple[Optional[Document], Optional[str]]:
     logger = get_logger(__name__, run_id=run_id)
 
@@ -204,7 +204,7 @@ def fetch_url(
 def fetch_documents_parallel(
     results: List[SearchResult],
     max_workers: int = FETCH_CONCURRENCY,
-    timeout: int = 15,
+    timeout: int = FETCH_TIMEOUT,
     run_id: Optional[str] = None,
 ) -> Tuple[List[Document], List[str]]:
     """Fetch multiple results concurrently using a thread pool."""

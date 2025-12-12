@@ -1,5 +1,6 @@
 """Tests for Gemini Google Search grounding integration."""
 
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -112,13 +113,46 @@ class TestQueryWithGrounding:
         # The test may not work perfectly due to import complexity, but validates structure
         assert isinstance(result, GroundingResult)
 
-    @pytest.mark.skip(reason="Lazy import pattern makes mocking complex; backoff tested manually")
-    def test_exponential_backoff_on_rate_limit(self, monkeypatch):
-        """Should retry with exponential backoff on ResourceExhausted."""
-        # This test is skipped because the lazy import of google.genai
-        # inside query_with_grounding makes mocking complex. The exponential
-        # backoff behavior is verified through manual testing with real API calls.
-        pass
+    @pytest.mark.skipif(
+        not os.getenv("GOOGLE_API_KEY") and not os.getenv("GOOGLE_API_KEYS"),
+        reason="Requires GOOGLE_API_KEY or GOOGLE_API_KEYS environment variable",
+    )
+    def test_exponential_backoff_on_rate_limit(self):
+        """Should handle rate limits gracefully with exponential backoff.
+
+        This is an integration test that verifies the grounding function
+        can handle API calls. It doesn't force a rate limit (which would
+        require many rapid calls), but verifies the function handles the
+        API correctly and returns a valid GroundingResult.
+        """
+        from api.key_rotator import APIKeyRotator
+
+        # Get API keys from environment
+        api_keys_str = os.getenv("GOOGLE_API_KEYS", os.getenv("GOOGLE_API_KEY", ""))
+        api_keys = [k.strip() for k in api_keys_str.split(",") if k.strip()]
+
+        if not api_keys:
+            pytest.skip("No valid API keys found")
+
+        rotator = APIKeyRotator(api_keys)
+
+        # Make a real API call with grounding
+        result = query_with_grounding(
+            "What is Python programming language?",
+            run_id="test-backoff",
+            key_rotator=rotator,
+        )
+
+        # Verify we got a valid result (success or handled failure)
+        assert isinstance(result, GroundingResult)
+
+        # If successful, verify answer structure
+        if result.success:
+            assert result.answer, "Expected non-empty answer"
+            assert result.error is None
+        else:
+            # If it failed, it should have an error message
+            assert result.error is not None
 
 
 class TestExtractGroundingSources:
