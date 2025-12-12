@@ -49,8 +49,13 @@ def test_end_to_end_pipeline(monkeypatch):
             None,
         )
 
+    def fake_smart_search(tasks, max_results=5, run_id=None):
+        """Mock smart_search to avoid LLM calls."""
+        return fake_search(tasks, max_results, run_id)
+
     monkeypatch.setattr("api.graph.run_search_tasks", fake_search)
     monkeypatch.setattr("api.graph.fetch_url", fake_fetch)
+    monkeypatch.setattr("api.graph.smart_search", fake_smart_search)
 
     fake_llm = FakeLLM()
     fake_store = FakeVectorStore()

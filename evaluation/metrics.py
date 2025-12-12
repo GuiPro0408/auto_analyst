@@ -58,14 +58,25 @@ def answer_correctness(answer: str, reference: str, model_name: str) -> float:
 def answer_hallucination(
     answer: str, contexts: List[str], model_name: str, threshold: float = 0.4
 ) -> float:
-    """Fraction of sentences that are unsupported by any context (lower is better)."""
+    """Fraction of sentences that are unsupported by any context (lower is better).
+
+    Uses batched embedding for efficiency - embeds all sentences at once instead of
+    one-by-one.
+    """
     if not answer or not contexts:
         return 1.0 if answer else 0.0
     sentences = [s.strip() for s in re.split(r"[.!?]", answer) if s.strip()]
-    ctx_embeddings = _embed_texts(contexts, model_name=model_name)
+    if not sentences:
+        return 0.0
+
+    # Batch embed: contexts first, then all sentences
+    all_texts = contexts + sentences
+    all_embeddings = _embed_texts(all_texts, model_name=model_name)
+    ctx_embeddings = all_embeddings[: len(contexts)]
+    sent_embeddings = all_embeddings[len(contexts) :]
+
     hallucinatory = 0
-    for sent in sentences:
-        sent_vec = _embed_texts([sent], model_name=model_name)[0]
+    for sent_vec in sent_embeddings:
         sims = [_cosine(sent_vec, ctx_vec) for ctx_vec in ctx_embeddings]
         supported = max(sims) >= threshold
         if not supported:

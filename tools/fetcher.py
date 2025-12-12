@@ -13,6 +13,7 @@ from api.config import (
     FETCH_BACKOFF_SECONDS,
     FETCH_CONCURRENCY,
     FETCH_RETRIES,
+    ROBOTS_ON_ERROR,
     USER_AGENT,
 )
 from api.logging_setup import get_logger
@@ -22,6 +23,17 @@ from tools.parser import parse_html, parse_pdf
 ROBOTS_CACHE_TTL_SECONDS = 1800  # 30 minutes
 _robots_cache: Dict[str, Tuple[bool, float]] = {}
 _robots_lock = threading.Lock()
+
+
+def is_valid_url(url: str) -> bool:
+    """Check if URL has valid scheme and netloc."""
+    if not url:
+        return False
+    try:
+        parsed = urlparse(url)
+        return parsed.scheme in ("http", "https") and bool(parsed.netloc)
+    except Exception:
+        return False
 
 
 def is_allowed(url: str, run_id: Optional[str] = None) -> bool:
@@ -53,14 +65,20 @@ def is_allowed(url: str, run_id: Optional[str] = None) -> bool:
             _robots_cache[domain] = (allowed, now)
         return allowed
     except Exception as exc:
-        # Fail closed by default to avoid bypassing robots unintentionally.
+        # Behavior on robots.txt fetch failure is configurable via ROBOTS_ON_ERROR
+        default_allow = ROBOTS_ON_ERROR == "allow"
         logger.warning(
             "robots_check_failed",
-            extra={"url": url, "error": str(exc), "defaulting_to": False},
+            extra={
+                "url": url,
+                "error": str(exc),
+                "defaulting_to": default_allow,
+                "robots_on_error": ROBOTS_ON_ERROR,
+            },
         )
         with _robots_lock:
-            _robots_cache[domain] = (False, now)
-        return False
+            _robots_cache[domain] = (default_allow, now)
+        return default_allow
 
 
 # Backwards compatibility alias for explicit naming
@@ -71,6 +89,15 @@ def fetch_url(
     result: SearchResult, timeout: int = 15, run_id: Optional[str] = None
 ) -> Tuple[Optional[Document], Optional[str]]:
     logger = get_logger(__name__, run_id=run_id)
+
+    # Validate URL before attempting fetch
+    if not is_valid_url(result.url):
+        logger.warning(
+            "fetch_invalid_url",
+            extra={"url": result.url[:200] if result.url else "None"},
+        )
+        return None, f"Invalid URL: {result.url[:100] if result.url else 'None'}"
+
     logger.info(
         "fetch_url_start",
         extra={"url": result.url, "source": result.source, "timeout": timeout},

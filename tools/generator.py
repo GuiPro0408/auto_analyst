@@ -3,6 +3,12 @@
 import re
 from typing import Dict, List, Optional, Tuple
 
+from api.config import (
+    COHERENCE_MAX_REPETITION_RATIO,
+    COHERENCE_MAX_WORD_REPEAT,
+    COHERENCE_MIN_ALNUM_RATIO,
+    COHERENCE_MIN_WORDS,
+)
 from api.logging_setup import get_logger
 from api.state import Chunk
 from tools.text_utils import STOPWORDS, extract_keywords, requires_structured_list
@@ -19,18 +25,33 @@ def _format_context(chunks: List[Chunk]) -> str:
 
 
 def _is_coherent(
-    text: str, min_word_length: int = 3, max_repetition_ratio: float = 0.4
+    text: str,
+    min_words: int = COHERENCE_MIN_WORDS,
+    max_repetition_ratio: float = COHERENCE_MAX_REPETITION_RATIO,
+    min_alnum_ratio: float = COHERENCE_MIN_ALNUM_RATIO,
+    max_word_repeat: int = COHERENCE_MAX_WORD_REPEAT,
 ) -> bool:
-    """Check if generated text appears coherent and not gibberish."""
+    """Check if generated text appears coherent and not gibberish.
+
+    Args:
+        text: The text to check.
+        min_words: Minimum word count for detailed checking.
+        max_repetition_ratio: Maximum ratio of any word to total words.
+        min_alnum_ratio: Minimum ratio of alphanumeric characters.
+        max_word_repeat: Maximum times a single word can repeat.
+
+    Returns:
+        True if text appears coherent.
+    """
     if not text or len(text.strip()) < 10:
         return False
 
     # Check for excessive repetition of short patterns
     words = text.lower().split()
 
-    # Short to medium responses (less than 20 words) are usually OK
+    # Short to medium responses (less than min_words) are usually OK
     # This allows concise LLM answers through without excessive checking
-    if len(words) < 20:
+    if len(words) < min_words:
         # Just check for basic gibberish indicators
         alnum_count = sum(c.isalnum() or c.isspace() for c in text)
         alnum_ratio = alnum_count / len(text) if text else 0
@@ -65,13 +86,13 @@ def _is_coherent(
     # Check for excessive non-alphanumeric characters (gibberish indicator)
     alnum_count = sum(c.isalnum() or c.isspace() for c in text)
     alnum_ratio = alnum_count / len(text) if text else 0
-    if alnum_ratio < 0.65:
+    if alnum_ratio < min_alnum_ratio:
         return False
 
     # Check for repeated fragments (like "Bun" appearing many times)
-    # If any 3+ letter word appears more than 8 times, likely gibberish
+    # If any 3+ letter word appears more than max_word_repeat times, likely gibberish
     for word, count in word_counts.items():
-        if len(word) >= 3 and count > 8:
+        if len(word) >= 3 and count > max_word_repeat:
             return False
 
     # Check for nonsensical number/letter combinations

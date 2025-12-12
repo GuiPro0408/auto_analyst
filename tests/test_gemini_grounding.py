@@ -19,12 +19,12 @@ class TestQueryWithGrounding:
     """Tests for the query_with_grounding function."""
 
     def test_returns_failure_when_no_api_key(self, monkeypatch):
-        """Should return failure when GEMINI_API_KEY is not set."""
-        monkeypatch.setattr("tools.gemini_grounding.GEMINI_API_KEY", "")
-        monkeypatch.setattr("tools.gemini_grounding.GEMINI_API_KEYS", [])
-        monkeypatch.setattr("tools.gemini_grounding._key_rotator", None)
+        """Should return failure when no API keys are available."""
+        from api.key_rotator import APIKeyRotator
 
-        result = query_with_grounding("test query")
+        # Use an empty key rotator directly
+        empty_rotator = APIKeyRotator([])
+        result = query_with_grounding("test query", key_rotator=empty_rotator)
 
         assert result.success is False
         assert result.error is not None
@@ -32,18 +32,40 @@ class TestQueryWithGrounding:
 
     def test_returns_failure_when_import_fails(self, monkeypatch):
         """Should return failure when google-genai is not installed."""
-        monkeypatch.setattr("tools.gemini_grounding.GEMINI_API_KEY", "test-key")
+        from api.key_rotator import APIKeyRotator
+        import sys
 
-        with patch.dict("sys.modules", {"google.genai": None, "google": None}):
-            # Force import error by patching the import
-            def raise_import_error(*args, **kwargs):
+        # Create rotator with a test key
+        test_rotator = APIKeyRotator(["test-key"])
+
+        # Remove google.genai from sys.modules if present and mock import
+        original_modules = dict(sys.modules)
+
+        # Clear any cached google modules
+        for mod in list(sys.modules.keys()):
+            if mod.startswith("google"):
+                del sys.modules[mod]
+
+        # Mock the import to fail
+        import builtins
+
+        original_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name.startswith("google"):
                 raise ImportError("No module named 'google.genai'")
+            return original_import(name, *args, **kwargs)
 
-            with patch("builtins.__import__", side_effect=raise_import_error):
-                result = query_with_grounding("test query")
+        try:
+            monkeypatch.setattr(builtins, "__import__", mock_import)
+            result = query_with_grounding("test query", key_rotator=test_rotator)
 
-        # The actual implementation catches ImportError
-        assert result.success is False or result.answer == ""
+            # The actual implementation catches ImportError
+            assert result.success is False
+            assert "google.genai" in (result.error or "").lower() or "google-genai" in (result.error or "").lower()
+        finally:
+            # Restore original modules
+            sys.modules.update(original_modules)
 
     @patch("tools.gemini_grounding.genai", create=True)
     def test_successful_grounding_query(self, mock_genai, monkeypatch):
@@ -176,9 +198,11 @@ class TestGeminiGroundingBackend:
         )
 
         backend = GeminiGroundingBackend()
-        results = backend.search("test query")
+        results, warnings = backend.search("test query")
 
         assert results == []
+        assert len(warnings) == 1
+        assert "Gemini grounding failed" in warnings[0]
 
     def test_search_converts_sources_to_results(self, monkeypatch):
         """Should convert grounding sources to SearchResult objects."""
@@ -199,7 +223,7 @@ class TestGeminiGroundingBackend:
         )
 
         backend = GeminiGroundingBackend()
-        results = backend.search("anime 2025")
+        results, warnings = backend.search("anime 2025")
 
         assert len(results) == 1
         assert results[0].url == "https://example.com/anime"
@@ -207,6 +231,7 @@ class TestGeminiGroundingBackend:
         assert results[0].source == "gemini_grounding"
         # First result should have the answer as content
         assert "grounded answer" in results[0].content
+        assert warnings == []
 
     def test_search_creates_synthetic_result_when_no_sources(self, monkeypatch):
         """Should create synthetic result when answer exists but no sources."""
@@ -220,8 +245,9 @@ class TestGeminiGroundingBackend:
         )
 
         backend = GeminiGroundingBackend()
-        results = backend.search("what is the answer?")
+        results, warnings = backend.search("what is the answer?")
 
         assert len(results) == 1
         assert results[0].title == "Gemini Grounded Response"
         assert results[0].content == "The answer is 42."
+        assert warnings == []

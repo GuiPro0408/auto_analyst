@@ -6,12 +6,7 @@ from uuid import uuid4
 
 from langgraph.graph import END, START, StateGraph
 
-from api.cache import (
-    CACHE_SCHEMA_VERSION,
-    QueryCache,
-    decode_research_state,
-    encode_research_state,
-)
+from api.cache_manager import CacheManager
 from api.config import (
     ADAPTIVE_MAX_ITERS,
     CACHE_DB_PATH,
@@ -33,6 +28,11 @@ from api.memory import (
     trim_history,
 )
 from api.state import Chunk, ConversationTurn, Document, GraphState, ResearchState
+from api.state_builder import (
+    build_research_state,
+    create_initial_state,
+    normalize_conversation_history,
+)
 from tools.adaptive_research import assess_context, refine_plan
 from tools.fetcher import fetch_documents_parallel, fetch_url
 from tools.generator import build_citations, generate_answer, verify_answer
@@ -81,7 +81,6 @@ def build_workflow(
         try:
             plan, time_sensitive = plan_query(
                 resolved_query,
-                llm=llm,
                 conversation_context=context_summary,
             )
             log.info(
@@ -356,7 +355,11 @@ def build_workflow(
             extra={
                 "reason": "insufficient_or_irrelevant_context",
                 "retrieved": len(retrieved),
-                "avg_score": sum(retrieval_scores) / len(retrieval_scores) if retrieval_scores else 0,
+                "avg_score": (
+                    sum(retrieval_scores) / len(retrieval_scores)
+                    if retrieval_scores
+                    else 0
+                ),
             },
         )
         new_tasks = refine_plan(state.get("query", ""), state.get("plan", []))
@@ -433,9 +436,7 @@ def build_workflow(
                     "duration_ms": (perf_counter() - start) * 1000,
                 },
             )
-            remapped, citations = build_citations(
-                grounded_sources, grounded_answer
-            )
+            remapped, citations = build_citations(grounded_sources, grounded_answer)
             return {
                 "draft_answer": remapped,
                 "citations": citations,
@@ -603,47 +604,18 @@ def run_research(
     run_id = str(uuid4())
     logger = get_logger(__name__, run_id=run_id)
     overall_start = perf_counter()
-    cache = QueryCache(CACHE_DB_PATH, CACHE_TTL_SECONDS)
-    normalized_history: List[ConversationTurn] = []
-    if conversation_history:
-        for turn in conversation_history:
-            if isinstance(turn, ConversationTurn):
-                normalized_history.append(turn)
-            elif isinstance(turn, dict):  # type: ignore[unreachable]
-                normalized_history.append(ConversationTurn.from_dict(turn))
+
+    # Normalize and trim conversation history
+    normalized_history = normalize_conversation_history(conversation_history)
     history_window = trim_history(
         normalized_history, max_turns=CONVERSATION_MEMORY_TURNS
     )
-    try:
-        cached_payload = cache.get(query)
-    except Exception as exc:  # pragma: no cover - defensive IO guard
-        logger.warning("query_cache_get_failed", extra={"error": str(exc)})
-        cached_payload = None
 
-    if cached_payload:
-        cached_state = decode_research_state(cached_payload)
-        fallback_cached = (
-            cached_state.draft_answer.startswith("No sufficient context")
-            or cached_state.verified_answer.startswith("No context retrieved")
-        )
-        grounded_cached = any(
-            getattr(sr, "source", None) == SOURCE_GEMINI_GROUNDING
-            for sr in cached_state.search_results
-        )
-        if not cached_state.time_sensitive and not fallback_cached and not grounded_cached:
-            logger.info(
-                "run_research_cache_hit",
-                extra={"query": query, "run_id": cached_state.run_id},
-            )
-            cached_state.warnings = [
-                *cached_state.warnings,
-                "Response served from cache; rerun with a rephrase to refresh.",
-            ]
-            return cached_state
-        logger.info(
-            "run_research_cache_skip_time_sensitive" if cached_state.time_sensitive else "run_research_cache_skip_low_context",
-            extra={"query": query},
-        )
+    # Check cache
+    cache_manager = CacheManager(CACHE_DB_PATH, CACHE_TTL_SECONDS, run_id=run_id)
+    cached_result = cache_manager.get_cached_result(query)
+    if cached_result:
+        return cached_result
 
     logger.info(
         "run_research_start",
@@ -656,6 +628,8 @@ def run_research(
             "history_turns": len(history_window),
         },
     )
+
+    # Build and invoke workflow
     workflow = build_workflow(
         llm=llm,
         vector_store=vector_store,
@@ -663,124 +637,49 @@ def run_research(
         top_k=top_k,
         run_id=run_id,
     )
-    logger.debug("run_research_workflow_built")
-    initial_state = {
-        "query": query,
-        "run_id": run_id,
-        "plan": [],
-        "search_results": [],
-        "documents": [],
-        "chunks": [],
-        "retrieved": [],
-        "retrieval_scores": [],
-        "draft_answer": "",
-        "verified_answer": "",
-        "citations": [],
-        "errors": [],
-        "warnings": [],
-        "adaptive_iterations": 0,
-        "qc_passes": 0,
-        "qc_notes": [],
-        "time_sensitive": False,
-        "conversation_history": history_window,
-        "grounded_answer": "",
-        "grounded_sources": [],
-    }
-    logger.debug("run_research_invoking_workflow")
+    initial_state = create_initial_state(query, run_id, history_window)
     result = workflow.invoke(cast(GraphState, initial_state))
 
-    # Ensure grounded answers are surfaced even if downstream nodes skipped them
-    grounded_answer = result.get("grounded_answer") or ""
-    grounded_sources = result.get("grounded_sources", []) or []
-    search_results = result.get("search_results", []) or []
-    if not grounded_answer:
-        for i, sr in enumerate(search_results):
-            if sr.source == SOURCE_GEMINI_GROUNDING and sr.content:
-                grounded_answer = sr.content
-                grounded_sources = [
-                    Chunk(
-                        id=f"grounding_{j}",
-                        text=source.snippet or source.title,
-                        metadata={
-                            "url": source.url,
-                            "title": source.title,
-                            "source": SOURCE_GEMINI_GROUNDING,
-                            "media_type": "text",
-                        },
-                    )
-                    for j, source in enumerate(search_results)
-                    if source.source == SOURCE_GEMINI_GROUNDING and source.url
-                ]
-                break
+    # Build research state (handles grounded answer extraction internally)
+    research_state = build_research_state(
+        query=query,
+        run_id=run_id,
+        result=result,
+        conversation_history=history_window,
+    )
 
-    draft_answer = result.get("draft_answer", "")
-    citations = result.get("citations", [])
-    retrieved_override = result.get("retrieved", [])
-    if grounded_answer:
-        remapped, citations = build_citations(grounded_sources, grounded_answer)
-        draft_answer = remapped
-        if grounded_sources:
-            retrieved_override = grounded_sources
-
-    verified_answer = result.get("verified_answer", "")
-    if grounded_answer and not verified_answer.startswith("Verified answer"):
-        verified_answer = f"Verified answer: {draft_answer}"
-
-    answer_text = verified_answer or draft_answer
+    # Update conversation history with the new turn
+    answer_text = research_state.verified_answer or research_state.draft_answer
     updated_history = append_turn(
         history_window,
         query=query,
         answer=answer_text,
-        citations=citations,
+        citations=research_state.citations,
         max_turns=CONVERSATION_MEMORY_TURNS,
     )
-    result["conversation_history"] = updated_history
+    research_state.conversation_history = updated_history
+
+    # Log completion
     duration_ms = (perf_counter() - overall_start) * 1000
     logger.info(
         "run_complete",
         extra={
             "duration_ms": duration_ms,
-            "chunks": len(result.get("chunks", [])),
-            "retrieved": len(result.get("retrieved", [])),
-            "documents": len(result.get("documents", [])),
-            "search_results": len(result.get("search_results", [])),
-            "plan_tasks": len(result.get("plan", [])),
-            "citations": len(result.get("citations", [])),
-            "errors": len(result.get("errors", [])),
-            "warnings": len(result.get("warnings", [])),
-            "adaptive_iterations": result.get("adaptive_iterations", 0),
-            "qc_passes": result.get("qc_passes", 0),
+            "chunks": len(research_state.chunks),
+            "retrieved": len(research_state.retrieved),
+            "documents": len(research_state.documents),
+            "search_results": len(research_state.search_results),
+            "plan_tasks": len(research_state.plan),
+            "citations": len(research_state.citations),
+            "errors": len(research_state.errors),
+            "warnings": len(research_state.warnings),
+            "adaptive_iterations": research_state.adaptive_iterations,
+            "qc_passes": research_state.qc_passes,
             "answer_length": len(answer_text),
             "history_turns": len(updated_history),
         },
     )
-    research_state = ResearchState(
-        query=query,
-        run_id=run_id,
-        plan=result.get("plan", []),
-        search_results=result.get("search_results", []),
-        documents=result.get("documents", []),
-        chunks=result.get("chunks", []),
-        retrieved=retrieved_override,
-        draft_answer=draft_answer,
-        verified_answer=verified_answer,
-        citations=citations,
-        errors=result.get("errors", []),
-        warnings=result.get("warnings", []),
-        adaptive_iterations=result.get("adaptive_iterations", 0),
-        qc_passes=result.get("qc_passes", 0),
-        qc_notes=result.get("qc_notes", []),
-        time_sensitive=result.get("time_sensitive", False),
-        conversation_history=updated_history,
-    )
-    if not research_state.time_sensitive and not research_state.errors:
-        payload = {
-            "version": CACHE_SCHEMA_VERSION,
-            "state": encode_research_state(research_state),
-        }
-        try:
-            cache.set(query, payload)
-        except Exception as exc:  # pragma: no cover - defensive IO guard
-            logger.warning("query_cache_set_failed", extra={"error": str(exc)})
 
+    # Cache result if appropriate
+    cache_manager.save_result(query, research_state)
     return research_state

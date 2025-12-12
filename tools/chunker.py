@@ -29,12 +29,29 @@ def _count_tokens(text: str, encoding=None) -> int:
 
 
 class TextChunker:
+    """Split documents into overlapping chunks for embedding."""
+
     def __init__(
         self,
         chunk_size: int = CHUNK_SIZE,
         overlap: int = CHUNK_OVERLAP,
         encoding_model: str = "gpt2",
     ) -> None:
+        """Initialize the chunker.
+
+        Args:
+            chunk_size: Target size of each chunk in tokens.
+            overlap: Number of tokens to overlap between chunks.
+            encoding_model: Tokenizer model name.
+
+        Raises:
+            ValueError: If chunk_size <= overlap (would cause infinite loop).
+        """
+        if chunk_size <= overlap:
+            raise ValueError(
+                f"chunk_size ({chunk_size}) must be greater than overlap ({overlap})"
+            )
+
         self.chunk_size = chunk_size
         self.overlap = overlap
         self.encoding = _get_encoding(encoding_model)

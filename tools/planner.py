@@ -145,7 +145,6 @@ def heuristic_plan(
 
 def plan_query(
     query: str,
-    llm=None,
     max_tasks: int = 4,
     conversation_context: Optional[str] = None,
 ) -> Tuple[List[SearchQuery], bool]:
@@ -153,6 +152,14 @@ def plan_query(
 
     Note: LLM planning moved to smart_search.py. This function now only
     uses heuristics for fallback scenarios.
+
+    Args:
+        query: The user's search query.
+        max_tasks: Maximum number of search tasks to generate.
+        conversation_context: Optional prior conversation summary.
+
+    Returns:
+        Tuple of (search_tasks, is_time_sensitive).
     """
     logger = get_logger(__name__)
 

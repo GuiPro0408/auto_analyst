@@ -56,7 +56,12 @@ def analyze_query_with_llm(query: str, run_id: Optional[str] = None) -> Dict[str
     except (json.JSONDecodeError, IndexError, KeyError) as exc:
         logger.warning(
             "query_analysis_failed",
-            extra={"error": str(exc), "response_preview": text[:200] if 'text' in locals() else ""},
+            extra={
+                "error": str(exc),
+                "error_type": type(exc).__name__,
+                "response_preview": text[:500] if text else "empty",
+                "response_full_length": len(text) if text else 0,
+            },
         )
         return {
             "intent": "general",
@@ -119,7 +124,12 @@ def validate_results_with_llm(
     except (json.JSONDecodeError, IndexError) as exc:
         logger.warning(
             "result_validation_failed",
-            extra={"error": str(exc), "response_preview": text[:200] if 'text' in locals() else ""},
+            extra={
+                "error": str(exc),
+                "error_type": type(exc).__name__,
+                "response_preview": text[:500] if text else "empty",
+                "response_full_length": len(text) if text else 0,
+            },
         )
         return results
 
@@ -131,7 +141,9 @@ def smart_search(
 ) -> Tuple[List[SearchResult], List[str]]:
     """Autonomous search pipeline with LLM analysis and validation."""
     logger = get_logger(__name__, run_id=run_id)
-    logger.info("smart_search_start", extra={"query": query, "max_results": max_results})
+    logger.info(
+        "smart_search_start", extra={"query": query, "max_results": max_results}
+    )
     warnings: List[str] = []
 
     analysis = analyze_query_with_llm(query, run_id=run_id)

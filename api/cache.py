@@ -104,11 +104,26 @@ def decode_research_state(payload: Dict[str, Any]) -> ResearchState:
 
 
 class QueryCache:
-    """Simple SQLite-backed cache for query results."""
+    """Simple SQLite-backed cache for query results with LRU eviction."""
 
-    def __init__(self, db_path: Path, ttl_seconds: int = 3600) -> None:
+    def __init__(
+        self,
+        db_path: Path,
+        ttl_seconds: int = 3600,
+        max_entries: Optional[int] = None,
+    ) -> None:
+        """Initialize the cache.
+
+        Args:
+            db_path: Path to SQLite database file.
+            ttl_seconds: Time-to-live for cache entries (0 = no expiry).
+            max_entries: Maximum number of entries to keep (None = unlimited).
+        """
+        from api.config import CACHE_MAX_ENTRIES
+
         self.db_path = Path(db_path)
         self.ttl_seconds = ttl_seconds
+        self.max_entries = max_entries if max_entries is not None else CACHE_MAX_ENTRIES
         self.logger = get_logger(__name__)
         self._lock = threading.Lock()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -118,16 +133,48 @@ class QueryCache:
                 CREATE TABLE IF NOT EXISTS query_cache (
                     cache_key TEXT PRIMARY KEY,
                     payload TEXT NOT NULL,
-                    created_at REAL NOT NULL
+                    created_at REAL NOT NULL,
+                    accessed_at REAL NOT NULL
                 )
                 """
             )
+            # Add accessed_at column if it doesn't exist (migration)
+            try:
+                conn.execute("SELECT accessed_at FROM query_cache LIMIT 1")
+            except sqlite3.OperationalError:
+                conn.execute(
+                    "ALTER TABLE query_cache ADD COLUMN accessed_at REAL DEFAULT 0"
+                )
             conn.commit()
 
     @staticmethod
     def _hash_query(query: str) -> str:
         normalized = query.strip().lower().encode("utf-8")
         return hashlib.sha256(normalized).hexdigest()
+
+    def _evict_if_needed(self, conn: sqlite3.Connection) -> None:
+        """Evict oldest entries if cache exceeds max size."""
+        if self.max_entries <= 0:
+            return
+
+        count = conn.execute("SELECT COUNT(*) FROM query_cache").fetchone()[0]
+        if count >= self.max_entries:
+            # Remove oldest 10% of entries by access time (LRU)
+            to_remove = max(1, int(self.max_entries * 0.1))
+            conn.execute(
+                """
+                DELETE FROM query_cache WHERE cache_key IN (
+                    SELECT cache_key FROM query_cache
+                    ORDER BY accessed_at ASC
+                    LIMIT ?
+                )
+                """,
+                (to_remove,),
+            )
+            self.logger.debug(
+                "cache_evicted",
+                extra={"evicted": to_remove, "total_before": count},
+            )
 
     def get(self, query: str) -> Optional[Dict[str, Any]]:
         cache_key = self._hash_query(query)
@@ -146,6 +193,13 @@ class QueryCache:
                 conn.commit()
                 self.logger.debug("query_cache_expired", extra={"cache_key": cache_key})
                 return None
+
+            # Update access time for LRU tracking
+            conn.execute(
+                "UPDATE query_cache SET accessed_at = ? WHERE cache_key = ?",
+                (_now(), cache_key),
+            )
+            conn.commit()
 
         try:
             payload = json.loads(payload_raw)
@@ -167,10 +221,12 @@ class QueryCache:
     def set(self, query: str, payload: Dict[str, Any]) -> None:
         cache_key = self._hash_query(query)
         encoded = json.dumps(payload)
+        now = _now()
         with self._lock, sqlite3.connect(self.db_path) as conn:
+            self._evict_if_needed(conn)
             conn.execute(
-                "REPLACE INTO query_cache (cache_key, payload, created_at) VALUES (?, ?, ?)",
-                (cache_key, encoded, _now()),
+                "REPLACE INTO query_cache (cache_key, payload, created_at, accessed_at) VALUES (?, ?, ?, ?)",
+                (cache_key, encoded, now, now),
             )
             conn.commit()
         self.logger.debug("query_cache_set", extra={"cache_key": cache_key})
@@ -192,3 +248,8 @@ class QueryCache:
         with self._lock, sqlite3.connect(self.db_path) as conn:
             rows = conn.execute("SELECT cache_key FROM query_cache").fetchall()
         return [row[0] for row in rows]
+
+    def size(self) -> int:
+        """Return current number of entries in cache."""
+        with self._lock, sqlite3.connect(self.db_path) as conn:
+            return conn.execute("SELECT COUNT(*) FROM query_cache").fetchone()[0]

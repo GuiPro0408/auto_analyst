@@ -66,8 +66,8 @@ class SearchBackend(ABC):
         query: str,
         max_results: int = 5,
         run_id: Optional[str] = None,
-    ) -> List[SearchResult]:
-        """Execute a search and return results."""
+    ) -> Tuple[List[SearchResult], List[str]]:
+        """Execute a search and return (results, warnings)."""
         pass
 
 
@@ -81,7 +81,7 @@ class GeminiGroundingBackend(SearchBackend):
         query: str,
         max_results: int = 5,
         run_id: Optional[str] = None,
-    ) -> List[SearchResult]:
+    ) -> Tuple[List[SearchResult], List[str]]:
         """Search using Gemini's Google Search grounding.
 
         Args:
@@ -90,9 +90,10 @@ class GeminiGroundingBackend(SearchBackend):
             run_id: Optional run ID for logging correlation.
 
         Returns:
-            List of SearchResult from grounding sources.
+            Tuple of (SearchResult list, warnings list).
         """
         logger = get_logger(__name__, run_id=run_id)
+        warnings: List[str] = []
         logger.debug(
             "gemini_grounding_search_start",
             extra={"query": query, "max_results": max_results},
@@ -105,7 +106,8 @@ class GeminiGroundingBackend(SearchBackend):
                 "gemini_grounding_search_failed",
                 extra={"error": result.error, "query": query},
             )
-            return []
+            warnings.append(f"Gemini grounding failed: {result.error}")
+            return [], warnings
 
         results: List[SearchResult] = []
         for source in result.sources[:max_results]:
@@ -144,7 +146,7 @@ class GeminiGroundingBackend(SearchBackend):
                 "answer_length": len(result.answer) if result.answer else 0,
             },
         )
-        return results
+        return results, warnings
 
 
 class TavilyBackend(SearchBackend):
@@ -160,8 +162,10 @@ class TavilyBackend(SearchBackend):
         topic: str = "general",
         time_range: Optional[str] = None,
         include_domains: Optional[List[str]] = None,
-    ) -> List[SearchResult]:
+    ) -> Tuple[List[SearchResult], List[str]]:
+        """Execute search and return (results, warnings)."""
         logger = get_logger(__name__, run_id=run_id)
+        warnings: List[str] = []
         api_key = TAVILY_API_KEY or os.getenv("TAVILY_API_KEY", "")
 
         if not api_key:
@@ -169,7 +173,8 @@ class TavilyBackend(SearchBackend):
                 "tavily_no_api_key",
                 extra={"query": query[:100]},
             )
-            return []
+            warnings.append("Tavily API key not configured; skipping Tavily search.")
+            return [], warnings
 
         payload = {
             "api_key": api_key,
@@ -216,14 +221,46 @@ class TavilyBackend(SearchBackend):
                     "time_range": time_range,
                 },
             )
-            return results
+            return results, warnings
 
+        except requests.exceptions.Timeout as exc:
+            logger.warning(
+                "tavily_search_timeout",
+                extra={"error": str(exc)[:200], "query": query[:100]},
+            )
+            warnings.append(f"Tavily search timed out: {exc}")
+            return [], warnings
+        except requests.exceptions.HTTPError as exc:
+            logger.warning(
+                "tavily_search_http_error",
+                extra={"error": str(exc)[:200], "query": query[:100], "status": getattr(exc.response, 'status_code', None)},
+            )
+            warnings.append(f"Tavily HTTP error: {exc}")
+            return [], warnings
         except Exception as exc:
             logger.warning(
                 "tavily_search_failed",
                 extra={"error": str(exc)[:200], "query": query[:100]},
             )
-            return []
+            warnings.append(f"Tavily search error: {exc}")
+            return [], warnings
+
+
+def canonical_source(name: str) -> str:
+    """Normalize a source name to its canonical form.
+
+    Args:
+        name: Source name to canonicalize.
+
+    Returns:
+        Canonical source name.
+    """
+    normalized = name.strip().lower()
+    if normalized in ("gemini_grounding", "gemini"):
+        return SOURCE_GEMINI_GROUNDING
+    if normalized == "tavily":
+        return SOURCE_TAVILY
+    return name
 
 
 def get_backend(name: str) -> Optional[SearchBackend]:
@@ -390,11 +427,12 @@ def run_search_tasks(
         )
         task_results_before = len(all_results)
         for backend in backend_instances:
-            results = backend.search(
+            results, backend_warnings = backend.search(
                 task.text,
                 max_results=max_results,
                 run_id=run_id,
             )
+            warnings.extend(backend_warnings)
             for res in results:
                 res.source = res.source or backend.name
             logger.debug(
@@ -436,11 +474,12 @@ def run_search_tasks(
                     "search_fallback_task_processing",
                     extra={"task_index": idx, "backend": backend.name, "query": task.text},
                 )
-                results = backend.search(
+                results, backend_warnings = backend.search(
                     task.text,
                     max_results=max_results,
                     run_id=run_id,
                 )
+                warnings.extend(backend_warnings)
                 for res in results:
                     res.source = res.source or backend.name
                 all_results.extend(results)

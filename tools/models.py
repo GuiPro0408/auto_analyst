@@ -11,18 +11,24 @@ from api.config import (
     DEFAULT_EMBED_MODEL,
     DEFAULT_LLM_MODEL,
     GEMINI_API_KEYS,
-    GEMINI_API_KEY,
     GEMINI_MODEL,
     GENERATION_KWARGS,
     HUGGINGFACE_API_TOKEN,
     HUGGINGFACE_INFERENCE_MODEL,
     LLM_BACKEND,
 )
+from api.key_rotator import APIKeyRotator, get_default_rotator
 from api.logging_setup import get_logger
+
+# Re-export for backward compatibility with tests
+GEMINI_API_KEY = GEMINI_API_KEYS[0] if GEMINI_API_KEYS else ""
 
 
 class GeminiLLM:
-    """Callable wrapper for Google Gemini models matching HF pipeline output."""
+    """Callable wrapper for Google Gemini models matching HF pipeline output.
+
+    Uses the shared APIKeyRotator for rate limit handling across API keys.
+    """
 
     def __init__(
         self,
@@ -30,14 +36,30 @@ class GeminiLLM:
         generation_kwargs: Dict[str, Any],
         api_key: Optional[str] = None,
         api_keys: Optional[List[str]] = None,
+        key_rotator: Optional[APIKeyRotator] = None,
         genai_module: Optional[Any] = None,
         fallback_llm: Optional[Any] = None,
     ) -> None:
         self.logger = get_logger(__name__)
         self._fallback_llm = fallback_llm
         self._using_fallback = False
-        self._api_keys = self._prepare_api_keys(api_key, api_keys)
-        self._current_key_index = 0
+
+        # Build key rotator from provided keys or use default
+        # Filter out empty strings from key lists
+        if key_rotator is not None:
+            self._key_rotator = key_rotator
+        elif api_keys:
+            valid_keys = [k for k in api_keys if k]
+            self._key_rotator = APIKeyRotator(valid_keys)
+        elif api_key:
+            self._key_rotator = APIKeyRotator([api_key] if api_key else [])
+        else:
+            self._key_rotator = get_default_rotator()
+
+        if self._key_rotator.total_keys == 0:
+            raise ValueError(
+                "GOOGLE_API_KEY is not set. Please add it to your environment or .env file."
+            )
 
         if genai_module is None:
             try:
@@ -52,42 +74,29 @@ class GeminiLLM:
         self._model_name = model_name
         self._generation_kwargs = generation_kwargs
         self._generation_config = self._map_generation_kwargs(generation_kwargs)
-        self._configure_model(self._api_keys[self._current_key_index])
+        self._configure_model()
         self.logger.info(
             "gemini_llm_initialized",
             extra={
                 "model_name": model_name,
                 "generation_config": self._generation_config,
                 "has_fallback": fallback_llm is not None,
-                "api_key_count": len(self._api_keys),
+                "api_key_count": self._key_rotator.total_keys,
             },
         )
 
-    @staticmethod
-    def _prepare_api_keys(api_key: Optional[str], api_keys: Optional[List[str]]) -> List[str]:
-        keys: List[str] = []
-        if api_key:
-            keys.append(api_key)
-        if api_keys:
-            for key in api_keys:
-                if key and key not in keys:
-                    keys.append(key)
-
-        if not keys:
-            raise ValueError(
-                "GOOGLE_API_KEY is not set. Please add it to your environment or .env file."
-            )
-        return keys
-
-    def _configure_model(self, api_key: str) -> None:
-        self._genai.configure(api_key=api_key)
+    def _configure_model(self) -> None:
+        """Configure Gemini with current API key from rotator."""
+        current_key = self._key_rotator.current_key
+        if not current_key:
+            raise ValueError("No API keys available")
+        self._genai.configure(api_key=current_key)
         self._model = self._genai.GenerativeModel(self._model_name)
-        self.logger.info(
+        self.logger.debug(
             "gemini_api_key_configured",
             extra={
                 "model_name": self._model_name,
-                "api_key_index": self._current_key_index,
-                "total_keys": len(self._api_keys),
+                "key_suffix": current_key[-8:] if current_key else "none",
             },
         )
 
@@ -101,16 +110,6 @@ class GeminiLLM:
         # Gemini does not support do_sample flag directly; ignore but keep log clarity.
         return config
 
-    def _is_rate_limit_error(self, exc: Exception) -> bool:
-        """Check if the exception is a rate limit (429) error."""
-        exc_str = str(exc).lower()
-        return (
-            "429" in exc_str
-            or "resource_exhausted" in exc_str
-            or "rate limit" in exc_str
-            or "quota" in exc_str
-        )
-
     def set_fallback(self, fallback_llm: Any) -> None:
         """Set a fallback LLM to use when rate limited."""
         self._fallback_llm = fallback_llm
@@ -119,23 +118,9 @@ class GeminiLLM:
             extra={"fallback_type": type(fallback_llm).__name__},
         )
 
-    def _switch_to_next_api_key(self, reason: str) -> bool:
-        if self._current_key_index + 1 >= len(self._api_keys):
-            return False
-
-        self._current_key_index += 1
-        self.logger.warning(
-            "gemini_switching_api_key",
-            extra={
-                "reason": reason[:200],
-                "next_api_key_index": self._current_key_index,
-                "total_keys": len(self._api_keys),
-            },
-        )
-        self._configure_model(self._api_keys[self._current_key_index])
-        return True
-
-    def _call_fallback(self, prompt: str, cause: Optional[Exception] = None) -> List[Dict[str, str]]:
+    def _call_fallback(
+        self, prompt: str, cause: Optional[Exception] = None
+    ) -> List[Dict[str, str]]:
         if self._fallback_llm is None:
             raise RuntimeError("No fallback LLM configured.")
 
@@ -168,20 +153,25 @@ class GeminiLLM:
             return self._call_fallback(prompt)
 
         attempts = 0
+        max_attempts = self._key_rotator.total_keys
         last_error: Optional[Exception] = None
 
-        while attempts < len(self._api_keys):
+        while attempts < max_attempts:
             start = perf_counter()
+            current_key = self._key_rotator.current_key
             try:
+                self._configure_model()  # Ensure we're using current key
                 response = self._model.generate_content(
                     prompt,
                     generation_config=self._generation_config,
                 )
             except Exception as exc:  # pragma: no cover - relies on remote API
                 last_error = exc
-                if self._is_rate_limit_error(exc) and self._switch_to_next_api_key(str(exc)):
-                    attempts += 1
-                    continue
+                if self._key_rotator.is_rate_limit_error(exc):
+                    has_more = self._key_rotator.mark_rate_limited(current_key or "")
+                    if has_more:
+                        attempts += 1
+                        continue
 
                 if self._fallback_llm is not None:
                     self.logger.warning(
@@ -200,6 +190,9 @@ class GeminiLLM:
                     extra={"model_name": self._model_name},
                 )
                 raise RuntimeError(f"Gemini API call failed: {exc}") from exc
+
+            # Success - reset rate limit tracking
+            self._key_rotator.reset()
 
             text = getattr(response, "text", "")
             if not text and getattr(response, "candidates", None):
@@ -227,7 +220,7 @@ class GeminiLLM:
                     "model_name": self._model_name,
                     "duration_ms": duration_ms,
                     "output_length": len(text),
-                    "api_key_index": self._current_key_index,
+                    "available_keys": self._key_rotator.available_keys,
                 },
             )
             return [{"generated_text": text}]
@@ -237,7 +230,7 @@ class GeminiLLM:
                 "gemini_all_api_keys_exhausted_falling_back",
                 extra={
                     "model_name": self._model_name,
-                    "attempted_keys": len(self._api_keys),
+                    "attempted_keys": self._key_rotator.total_keys,
                     "last_error": str(last_error)[:200] if last_error else None,
                 },
             )
@@ -409,11 +402,12 @@ def load_llm(model_name: str = DEFAULT_LLM_MODEL, device_map: str = "auto"):
                         extra={"error": str(fallback_exc)},
                     )
 
-            api_keys = GEMINI_API_KEYS or ([GEMINI_API_KEY] if GEMINI_API_KEY else [])
+            # Use shared key rotator
+            key_rotator = get_default_rotator(GEMINI_API_KEYS)
             return GeminiLLM(
                 model_name=configured_model,
                 generation_kwargs=GENERATION_KWARGS,
-                api_keys=api_keys,
+                key_rotator=key_rotator,
                 fallback_llm=fallback_llm,
             )
         except ImportError as exc:

@@ -18,7 +18,7 @@ def test_run_search_tasks_falls_back_to_gemini(monkeypatch):
         name = "empty"
 
         def search(self, *_, **__):
-            return []
+            return [], []
 
         def supports_topic(self, *_):
             return True
@@ -35,7 +35,7 @@ def test_run_search_tasks_falls_back_to_gemini(monkeypatch):
                     source="gemini_grounding",
                     content="Arsenal lead the table.",
                 )
-            ]
+            ], []
 
         def supports_topic(self, *_):
             return True
@@ -56,7 +56,7 @@ def test_run_search_tasks_fallback_chain(monkeypatch):
         name = "empty"
 
         def search(self, *_, **__):
-            return []
+            return [], []
 
         def supports_topic(self, *_):
             return True
@@ -73,7 +73,7 @@ def test_run_search_tasks_fallback_chain(monkeypatch):
                     source="tavily",
                     content="Premier League standings",
                 )
-            ]
+            ], []
 
         def supports_topic(self, *_):
             return True
@@ -102,7 +102,7 @@ def test_run_search_tasks_seed_sports_when_empty(monkeypatch):
         name = "empty"
 
         def search(self, *_, **__):
-            return []
+            return [], []
 
         def supports_topic(self, *_):
             return True
@@ -127,7 +127,7 @@ def test_run_search_tasks_seed_news_when_empty(monkeypatch):
         name = "empty"
 
         def search(self, *_, **__):
-            return []
+            return [], []
 
         def supports_topic(self, *_):
             return True

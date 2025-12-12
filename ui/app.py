@@ -1,13 +1,12 @@
-"""Streamlit UI for Auto-Analyst."""
+"""Streamlit UI for Auto-Analyst.
 
-import sys
-from pathlib import Path
+Note: This module should be run from the project root directory using:
+    streamlit run ui/app.py
+
+The project root must be in PYTHONPATH for imports to work correctly.
+"""
 
 import streamlit as st
-
-ROOT = Path(__file__).resolve().parent.parent
-if str(ROOT) not in sys.path:  # Ensure local imports work when run via streamlit
-    sys.path.insert(0, str(ROOT))
 
 from api.config import (
     CONVERSATION_MEMORY_TURNS,

@@ -55,11 +55,15 @@ def test_gemini_llm_maps_generation_kwargs():
 
 
 def test_gemini_llm_missing_api_key_raises():
+    from api.key_rotator import APIKeyRotator
+
+    # Pass an empty key rotator directly to ensure no keys are available
+    empty_rotator = APIKeyRotator([])
     with pytest.raises(ValueError):
         GeminiLLM(
             model_name="gemini-1.5-flash",
-            api_key="",
             generation_kwargs={},
+            key_rotator=empty_rotator,
             genai_module=DummyGenAI,
         )
 
@@ -70,14 +74,14 @@ def test_load_llm_uses_gemini_backend(monkeypatch):
     monkeypatch.setattr(models, "GEMINI_API_KEY", "secret")
 
     # Ensure API key list is recomputed for this test
-    monkeypatch.setattr(models, "GEMINI_API_KEYS", [])
+    monkeypatch.setattr(models, "GEMINI_API_KEYS", ["secret"])
 
     captured = {}
 
     class FakeGemini:
-        def __init__(self, model_name, generation_kwargs, api_keys=None, **_kwargs):
+        def __init__(self, model_name, generation_kwargs, key_rotator=None, **_kwargs):
             captured["model_name"] = model_name
-            captured["api_keys"] = api_keys
+            captured["key_rotator"] = key_rotator
             captured["generation_kwargs"] = generation_kwargs
 
     monkeypatch.setattr(models, "GeminiLLM", FakeGemini)
@@ -86,7 +90,8 @@ def test_load_llm_uses_gemini_backend(monkeypatch):
         llm = models.load_llm(model_name="custom-gemini")
 
         assert captured["model_name"] == "custom-gemini"
-        assert captured["api_keys"] == ["secret"]
+        assert captured["key_rotator"] is not None
+        assert captured["key_rotator"].total_keys == 1
         assert captured["generation_kwargs"] == models.GENERATION_KWARGS
         assert isinstance(llm, FakeGemini)
     finally:
@@ -185,6 +190,10 @@ def test_gemini_llm_rotates_api_keys_on_rate_limit():
 
                 return _Response()
 
+    # Reset state before test
+    RateLimitGenAI.configured_keys = []
+    RateLimitGenAI.calls = 0
+
     llm = GeminiLLM(
         model_name="gemini-1.5-flash",
         generation_kwargs={},
@@ -192,10 +201,14 @@ def test_gemini_llm_rotates_api_keys_on_rate_limit():
         genai_module=RateLimitGenAI,
     )
 
+    # Init configures with first key
+    assert RateLimitGenAI.configured_keys == ["key-one"]
+
     result = llm("hello")
 
     assert result == [{"generated_text": "Recovered after rotation"}]
-    assert RateLimitGenAI.configured_keys == ["key-one", "key-two"]
+    # After __call__: reconfigure before request (key-one), then after rotation (key-two)
+    assert RateLimitGenAI.configured_keys == ["key-one", "key-one", "key-two"]
     assert RateLimitGenAI.calls == 2
 
 
@@ -227,6 +240,10 @@ def test_gemini_llm_uses_fallback_when_all_keys_rate_limited():
 
         return [{"generated_text": "fallback-success"}]
 
+    # Reset state before test
+    AlwaysRateLimitGenAI.configured_keys = []
+    AlwaysRateLimitGenAI.calls = 0
+
     llm = GeminiLLM(
         model_name="gemini-1.5-flash",
         generation_kwargs={},
@@ -235,11 +252,15 @@ def test_gemini_llm_uses_fallback_when_all_keys_rate_limited():
         fallback_llm=fallback_fn,
     )
 
+    # Init configures with only key
+    assert AlwaysRateLimitGenAI.configured_keys == ["only-key"]
+
     result = llm("question")
 
     assert result == [{"generated_text": "fallback-success"}]
     assert fallback_calls == ["question"]
-    assert AlwaysRateLimitGenAI.configured_keys == ["only-key"]
+    # After __call__: reconfigure before request (only-key)
+    assert AlwaysRateLimitGenAI.configured_keys == ["only-key", "only-key"]
 
 
 def test_hf_inference_llm_retries_on_failure():
