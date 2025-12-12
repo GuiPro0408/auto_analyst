@@ -16,6 +16,31 @@ FALLBACK_PHRASES = [
 ]
 
 
+def _needs_structured_list(question: str) -> bool:
+    q = question.lower()
+    triggers = {
+        "list",
+        "releases",
+        "releasing",
+        "release",
+        "lineup",
+        "schedule",
+        "standings",
+        "ranking",
+        "table",
+        "top",
+        "currently",
+        "current",
+        "today",
+        "upcoming",
+        "fall",
+        "spring",
+        "summer",
+        "winter",
+    }
+    return any(term in q for term in triggers)
+
+
 def assess_answer(
     question: str,
     answer: str,
@@ -84,6 +109,12 @@ def assess_answer(
                     "threshold": min_qc_threshold,
                 },
             )
+
+    # Check 6: List-style questions should return structured bullets/numbered items
+    if _needs_structured_list(question):
+        if "-" not in answer and "1." not in answer:
+            issues.append("Missing structured list format for a list-style question.")
+            logger.warning("assess_answer_missing_list_structure")
 
     is_good_enough = len(issues) == 0
     logger.info(

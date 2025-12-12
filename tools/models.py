@@ -1,7 +1,7 @@
 """Model loading helpers for free/open-source LLMs and embedding models."""
 
 from functools import lru_cache
-from time import perf_counter
+from time import perf_counter, sleep
 from typing import Any, Dict, List, Optional
 
 from huggingface_hub import InferenceClient
@@ -10,6 +10,7 @@ from sentence_transformers import SentenceTransformer
 from api.config import (
     DEFAULT_EMBED_MODEL,
     DEFAULT_LLM_MODEL,
+    GEMINI_API_KEYS,
     GEMINI_API_KEY,
     GEMINI_MODEL,
     GENERATION_KWARGS,
@@ -26,16 +27,17 @@ class GeminiLLM:
     def __init__(
         self,
         model_name: str,
-        api_key: str,
         generation_kwargs: Dict[str, Any],
+        api_key: Optional[str] = None,
+        api_keys: Optional[List[str]] = None,
         genai_module: Optional[Any] = None,
+        fallback_llm: Optional[Any] = None,
     ) -> None:
-        if not api_key:
-            raise ValueError(
-                "GOOGLE_API_KEY is not set. Please add it to your environment or .env file."
-            )
-
         self.logger = get_logger(__name__)
+        self._fallback_llm = fallback_llm
+        self._using_fallback = False
+        self._api_keys = self._prepare_api_keys(api_key, api_keys)
+        self._current_key_index = 0
 
         if genai_module is None:
             try:
@@ -46,16 +48,46 @@ class GeminiLLM:
                 ) from exc
             genai_module = genai
 
-        genai_module.configure(api_key=api_key)
         self._genai = genai_module
-        self._model = genai_module.GenerativeModel(model_name)
         self._model_name = model_name
+        self._generation_kwargs = generation_kwargs
         self._generation_config = self._map_generation_kwargs(generation_kwargs)
+        self._configure_model(self._api_keys[self._current_key_index])
         self.logger.info(
             "gemini_llm_initialized",
             extra={
                 "model_name": model_name,
                 "generation_config": self._generation_config,
+                "has_fallback": fallback_llm is not None,
+                "api_key_count": len(self._api_keys),
+            },
+        )
+
+    @staticmethod
+    def _prepare_api_keys(api_key: Optional[str], api_keys: Optional[List[str]]) -> List[str]:
+        keys: List[str] = []
+        if api_key:
+            keys.append(api_key)
+        if api_keys:
+            for key in api_keys:
+                if key and key not in keys:
+                    keys.append(key)
+
+        if not keys:
+            raise ValueError(
+                "GOOGLE_API_KEY is not set. Please add it to your environment or .env file."
+            )
+        return keys
+
+    def _configure_model(self, api_key: str) -> None:
+        self._genai.configure(api_key=api_key)
+        self._model = self._genai.GenerativeModel(self._model_name)
+        self.logger.info(
+            "gemini_api_key_configured",
+            extra={
+                "model_name": self._model_name,
+                "api_key_index": self._current_key_index,
+                "total_keys": len(self._api_keys),
             },
         )
 
@@ -69,49 +101,153 @@ class GeminiLLM:
         # Gemini does not support do_sample flag directly; ignore but keep log clarity.
         return config
 
-    def __call__(self, prompt: str) -> List[Dict[str, str]]:
-        start = perf_counter()
-        try:
-            response = self._model.generate_content(
-                prompt,
-                generation_config=self._generation_config,
-            )
-        except Exception as exc:  # pragma: no cover - relies on remote API
-            self.logger.exception(
-                "gemini_generate_failed",
-                extra={"model_name": self._model_name},
-            )
-            raise RuntimeError(f"Gemini API call failed: {exc}") from exc
+    def _is_rate_limit_error(self, exc: Exception) -> bool:
+        """Check if the exception is a rate limit (429) error."""
+        exc_str = str(exc).lower()
+        return (
+            "429" in exc_str
+            or "resource_exhausted" in exc_str
+            or "rate limit" in exc_str
+            or "quota" in exc_str
+        )
 
-        text = getattr(response, "text", "")
-        if not text and getattr(response, "candidates", None):
-            parts: List[str] = []
-            for candidate in response.candidates:
-                content = getattr(candidate, "content", None)
-                content_parts = getattr(content, "parts", None) if content else None
-                if not content_parts:
-                    continue
-                for part in content_parts:
-                    parts.append(getattr(part, "text", ""))
-            text = "".join(parts).strip()
-
-        if not text:
-            self.logger.warning(
-                "gemini_response_empty",
-                extra={"model_name": self._model_name},
-            )
-            text = ""
-
-        duration_ms = (perf_counter() - start) * 1000
+    def set_fallback(self, fallback_llm: Any) -> None:
+        """Set a fallback LLM to use when rate limited."""
+        self._fallback_llm = fallback_llm
         self.logger.info(
-            "gemini_generate_complete",
+            "gemini_fallback_set",
+            extra={"fallback_type": type(fallback_llm).__name__},
+        )
+
+    def _switch_to_next_api_key(self, reason: str) -> bool:
+        if self._current_key_index + 1 >= len(self._api_keys):
+            return False
+
+        self._current_key_index += 1
+        self.logger.warning(
+            "gemini_switching_api_key",
             extra={
-                "model_name": self._model_name,
-                "duration_ms": duration_ms,
-                "output_length": len(text),
+                "reason": reason[:200],
+                "next_api_key_index": self._current_key_index,
+                "total_keys": len(self._api_keys),
             },
         )
-        return [{"generated_text": text}]
+        self._configure_model(self._api_keys[self._current_key_index])
+        return True
+
+    def _call_fallback(self, prompt: str, cause: Optional[Exception] = None) -> List[Dict[str, str]]:
+        if self._fallback_llm is None:
+            raise RuntimeError("No fallback LLM configured.")
+
+        try:
+            return self._fallback_llm(prompt)
+        except Exception as exc:  # pragma: no cover - remote dependency
+            self.logger.exception(
+                "gemini_fallback_failed",
+                extra={
+                    "cause": str(cause)[:200] if cause else None,
+                    "fallback_error": str(exc)[:200],
+                },
+            )
+            return [
+                {
+                    "generated_text": (
+                        "Unable to generate a response because both primary and fallback LLMs failed. "
+                        "Please retry shortly or configure additional providers."
+                    )
+                }
+            ]
+
+    def __call__(self, prompt: str) -> List[Dict[str, str]]:
+        # If we've already switched to fallback, use it directly
+        if self._using_fallback and self._fallback_llm is not None:
+            self.logger.info(
+                "gemini_using_fallback",
+                extra={"reason": "previously_rate_limited"},
+            )
+            return self._call_fallback(prompt)
+
+        attempts = 0
+        last_error: Optional[Exception] = None
+
+        while attempts < len(self._api_keys):
+            start = perf_counter()
+            try:
+                response = self._model.generate_content(
+                    prompt,
+                    generation_config=self._generation_config,
+                )
+            except Exception as exc:  # pragma: no cover - relies on remote API
+                last_error = exc
+                if self._is_rate_limit_error(exc) and self._switch_to_next_api_key(str(exc)):
+                    attempts += 1
+                    continue
+
+                if self._fallback_llm is not None:
+                    self.logger.warning(
+                        "gemini_error_using_fallback",
+                        extra={
+                            "model_name": self._model_name,
+                            "error": str(exc)[:200],
+                            "fallback_type": type(self._fallback_llm).__name__,
+                        },
+                    )
+                    self._using_fallback = True
+                    return self._call_fallback(prompt, exc)
+
+                self.logger.exception(
+                    "gemini_generate_failed",
+                    extra={"model_name": self._model_name},
+                )
+                raise RuntimeError(f"Gemini API call failed: {exc}") from exc
+
+            text = getattr(response, "text", "")
+            if not text and getattr(response, "candidates", None):
+                parts: List[str] = []
+                for candidate in response.candidates:
+                    content = getattr(candidate, "content", None)
+                    content_parts = getattr(content, "parts", None) if content else None
+                    if not content_parts:
+                        continue
+                    for part in content_parts:
+                        parts.append(getattr(part, "text", ""))
+                text = "".join(parts).strip()
+
+            if not text:
+                self.logger.warning(
+                    "gemini_response_empty",
+                    extra={"model_name": self._model_name},
+                )
+                text = ""
+
+            duration_ms = (perf_counter() - start) * 1000
+            self.logger.info(
+                "gemini_generate_complete",
+                extra={
+                    "model_name": self._model_name,
+                    "duration_ms": duration_ms,
+                    "output_length": len(text),
+                    "api_key_index": self._current_key_index,
+                },
+            )
+            return [{"generated_text": text}]
+
+        if self._fallback_llm is not None:
+            self.logger.warning(
+                "gemini_all_api_keys_exhausted_falling_back",
+                extra={
+                    "model_name": self._model_name,
+                    "attempted_keys": len(self._api_keys),
+                    "last_error": str(last_error)[:200] if last_error else None,
+                },
+            )
+            self._using_fallback = True
+            return self._call_fallback(prompt, last_error)
+
+        raise RuntimeError(
+            "Gemini API call failed and no fallback is configured. Last error: "
+            f"{last_error}"
+        )
 
 
 @lru_cache(maxsize=2)
@@ -142,6 +278,8 @@ class HuggingFaceInferenceLLM:
         api_token: str,
         generation_kwargs: Dict[str, Any],
         client: Optional[InferenceClient] = None,
+        retries: int = 2,
+        backoff_seconds: float = 0.5,
     ) -> None:
         if not api_token:
             raise ValueError(
@@ -152,60 +290,78 @@ class HuggingFaceInferenceLLM:
         self._model_name = model_name
         self._generation_kwargs = self._map_generation_kwargs(generation_kwargs)
         self._client = client or InferenceClient(model=model_name, token=api_token)
+        self._retries = max(1, retries)
+        self._backoff_seconds = max(0.0, backoff_seconds)
         self.logger.info(
             "hf_inference_llm_initialized",
             extra={
                 "model_name": model_name,
                 "generation_kwargs": self._generation_kwargs,
+                "retries": self._retries,
+                "backoff_seconds": self._backoff_seconds,
             },
         )
 
     @staticmethod
     def _map_generation_kwargs(kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        """Map generation kwargs to HuggingFace chat_completion format."""
         mapped = {}
         if "max_new_tokens" in kwargs:
-            mapped["max_new_tokens"] = kwargs["max_new_tokens"]
+            mapped["max_tokens"] = kwargs["max_new_tokens"]
         if "temperature" in kwargs:
             mapped["temperature"] = kwargs["temperature"]
-        if "do_sample" in kwargs:
-            mapped["do_sample"] = kwargs["do_sample"]
+        # do_sample is not used in chat_completion
         return mapped
 
     def __call__(self, prompt: str) -> List[Dict[str, str]]:
-        start = perf_counter()
-        try:
-            response = self._client.text_generation(
-                prompt,
-                **self._generation_kwargs,
-            )
-        except Exception as exc:  # pragma: no cover - remote dependency
-            self.logger.exception(
-                "hf_inference_generate_failed",
-                extra={"model_name": self._model_name},
-            )
-            raise RuntimeError(f"HuggingFace Inference API call failed: {exc}") from exc
+        last_error: Optional[Exception] = None
+        for attempt in range(self._retries):
+            start = perf_counter()
+            try:
+                # Use chat_completion which has better provider support
+                response = self._client.chat_completion(
+                    messages=[{"role": "user", "content": prompt}],
+                    **self._generation_kwargs,
+                )
+                text = response.choices[0].message.content
+                duration_ms = (perf_counter() - start) * 1000
+                if text is None:
+                    text = ""
+                self.logger.info(
+                    "hf_inference_generate_complete",
+                    extra={
+                        "model_name": self._model_name,
+                        "duration_ms": duration_ms,
+                        "output_length": len(text),
+                        "attempt": attempt + 1,
+                    },
+                )
+                return [{"generated_text": text}]
+            except Exception as exc:  # pragma: no cover - remote dependency
+                last_error = exc
+                if attempt < self._retries - 1:
+                    self.logger.warning(
+                        "hf_inference_retry",
+                        extra={
+                            "model_name": self._model_name,
+                            "attempt": attempt + 1,
+                            "error": str(exc)[:200],
+                        },
+                    )
+                    if self._backoff_seconds:
+                        sleep(self._backoff_seconds)
+                    continue
 
-        text: Optional[str] = None
-        if hasattr(response, "generated_text"):
-            text = getattr(response, "generated_text")
-        elif isinstance(response, dict):
-            text = response.get("generated_text")
-        elif isinstance(response, str):
-            text = response
-
-        if text is None:
-            text = str(response)
-
-        duration_ms = (perf_counter() - start) * 1000
-        self.logger.info(
-            "hf_inference_generate_complete",
-            extra={
-                "model_name": self._model_name,
-                "duration_ms": duration_ms,
-                "output_length": len(text),
-            },
-        )
-        return [{"generated_text": text}]
+                self.logger.exception(
+                    "hf_inference_generate_failed",
+                    extra={
+                        "model_name": self._model_name,
+                        "attempts": self._retries,
+                    },
+                )
+                raise RuntimeError(
+                    f"HuggingFace Inference API call failed after {self._retries} attempts: {exc}"
+                ) from exc
 
 
 @lru_cache(maxsize=2)
@@ -229,10 +385,36 @@ def load_llm(model_name: str = DEFAULT_LLM_MODEL, device_map: str = "auto"):
             },
         )
         try:
+            # Create HuggingFace fallback if token is available
+            fallback_llm = None
+            if HUGGINGFACE_API_TOKEN:
+                fallback_model = (
+                    HUGGINGFACE_INFERENCE_MODEL
+                    if model_name == DEFAULT_LLM_MODEL
+                    else model_name
+                )
+                try:
+                    fallback_llm = HuggingFaceInferenceLLM(
+                        model_name=fallback_model,
+                        api_token=HUGGINGFACE_API_TOKEN,
+                        generation_kwargs=GENERATION_KWARGS,
+                    )
+                    logger.info(
+                        "load_llm_hf_fallback_ready",
+                        extra={"fallback_model": fallback_model},
+                    )
+                except Exception as fallback_exc:
+                    logger.warning(
+                        "load_llm_hf_fallback_init_failed",
+                        extra={"error": str(fallback_exc)},
+                    )
+
+            api_keys = GEMINI_API_KEYS or ([GEMINI_API_KEY] if GEMINI_API_KEY else [])
             return GeminiLLM(
                 model_name=configured_model,
-                api_key=GEMINI_API_KEY,
                 generation_kwargs=GENERATION_KWARGS,
+                api_keys=api_keys,
+                fallback_llm=fallback_llm,
             )
         except ImportError as exc:
             logger.warning(

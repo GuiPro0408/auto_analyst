@@ -57,7 +57,12 @@ def _as_search_result(data: Dict[str, Any]) -> SearchResult:
 
 
 def _as_search_query(data: Dict[str, Any]) -> SearchQuery:
-    return SearchQuery(text=data.get("text", ""), rationale=data.get("rationale", ""))
+    return SearchQuery(
+        text=data.get("text", ""),
+        rationale=data.get("rationale", ""),
+        topic=data.get("topic", ""),
+        preferred_domains=data.get("preferred_domains", []),
+    )
 
 
 def _as_conversation_turn(data: Dict[str, Any]) -> ConversationTurn:

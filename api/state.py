@@ -9,6 +9,8 @@ from typing import Any, Dict, List, Optional, TypedDict
 class SearchQuery:
     text: str
     rationale: str = ""
+    topic: str = ""
+    preferred_domains: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -18,6 +20,7 @@ class SearchResult:
     snippet: str = ""
     source: str = "web"
     content: str = ""  # Pre-fetched content (e.g., Wikipedia summaries)
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

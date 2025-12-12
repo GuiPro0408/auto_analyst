@@ -52,9 +52,6 @@ with st.sidebar:
         value=DEFAULT_EMBED_MODEL,
         help="Sentence-transformers model id for embeddings.",
     )
-    searx_host = st.text_input(
-        "Optional SearxNG host (e.g., https://searx.example.com)"
-    )
 
     st.markdown("---")
     st.caption(
@@ -110,7 +107,7 @@ if run and query.strip():
             llm=llm,
             vector_store=store,
             embed_model=embed_model,
-            searx_host=searx_host or None,
+            searx_host=None,
             top_k=top_k,
             conversation_history=history_turns,
         )

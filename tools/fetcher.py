@@ -1,8 +1,9 @@
 """Fetcher that retrieves web pages and PDFs, respecting robots.txt."""
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 import time
+import threading
 from urllib.parse import urlparse
 from urllib.robotparser import RobotFileParser
 
@@ -18,11 +19,27 @@ from api.logging_setup import get_logger
 from api.state import Document, SearchResult
 from tools.parser import parse_html, parse_pdf
 
+ROBOTS_CACHE_TTL_SECONDS = 1800  # 30 minutes
+_robots_cache: Dict[str, Tuple[bool, float]] = {}
+_robots_lock = threading.Lock()
+
 
 def is_allowed(url: str, run_id: Optional[str] = None) -> bool:
     logger = get_logger(__name__, run_id=run_id)
     parsed = urlparse(url)
     robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
+    domain = parsed.netloc
+    now = time.time()
+
+    with _robots_lock:
+        cached = _robots_cache.get(domain)
+        if cached and (now - cached[1]) < ROBOTS_CACHE_TTL_SECONDS:
+            logger.debug(
+                "robots_cache_hit",
+                extra={"url": url, "domain": domain, "allowed": cached[0]},
+            )
+            return cached[0]
+
     rp = RobotFileParser()
     try:
         rp.set_url(robots_url)
@@ -32,6 +49,8 @@ def is_allowed(url: str, run_id: Optional[str] = None) -> bool:
             "robots_check",
             extra={"url": url, "robots_url": robots_url, "allowed": allowed},
         )
+        with _robots_lock:
+            _robots_cache[domain] = (allowed, now)
         return allowed
     except Exception as exc:
         # If robots cannot be fetched, err on the side of fetching since sources are public.
@@ -39,7 +58,13 @@ def is_allowed(url: str, run_id: Optional[str] = None) -> bool:
             "robots_check_failed",
             extra={"url": url, "error": str(exc), "defaulting_to": True},
         )
+        with _robots_lock:
+            _robots_cache[domain] = (True, now)
         return True
+
+
+# Backwards compatibility alias for explicit naming
+is_allowed_to_fetch = is_allowed
 
 
 def fetch_url(

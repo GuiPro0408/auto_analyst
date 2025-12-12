@@ -22,6 +22,7 @@ from api.config import (
     ENABLE_RERANKER,
     FETCH_CONCURRENCY,
     QC_MAX_PASSES,
+    SMART_SEARCH_ENABLED,
     TOP_K_RESULTS,
 )
 from api.logging_setup import get_logger
@@ -40,6 +41,7 @@ from tools.quality_control import assess_answer, improve_answer
 from tools.retriever import build_vector_store, chunk_documents
 from tools.reranker import rerank_chunks
 from tools.search import run_search_tasks
+from tools.smart_search import smart_search
 from tools.chunker import TextChunker
 from tools.models import load_llm
 from vector_store.base import VectorStore
@@ -105,16 +107,30 @@ def build_workflow(
         log = get_logger("api.graph.search", run_id=state.get("run_id"))
         start = perf_counter()
         plan = state.get("plan", [])
+        query = state.get("query", "")
         log.info(
             "search_start",
-            extra={"tasks": len(plan), "task_queries": [t.text for t in plan]},
+            extra={
+                "tasks": len(plan),
+                "task_queries": [t.text for t in plan],
+                "query": query,
+            },
         )
-        results, warnings = run_search_tasks(
-            plan,
-            max_results=5,
-            searx_host=searx_host,
-            run_id=state.get("run_id"),
-        )
+        if SMART_SEARCH_ENABLED and query:
+            log.info("search_using_smart_search", extra={"query": query})
+            results, warnings = smart_search(
+                query,
+                max_results=5,
+                run_id=state.get("run_id"),
+                searx_host=searx_host,
+            )
+        else:
+            results, warnings = run_search_tasks(
+                plan,
+                max_results=5,
+                searx_host=searx_host,
+                run_id=state.get("run_id"),
+            )
         log.info(
             "search_complete",
             extra={
@@ -399,9 +415,11 @@ def build_workflow(
                     "duration_ms": (perf_counter() - start) * 1000,
                 },
             )
-            citations = build_citations(grounded_sources)
+            remapped, citations = build_citations(
+                grounded_sources, grounded_answer
+            )
             return {
-                "draft_answer": grounded_answer,
+                "draft_answer": remapped,
                 "citations": citations,
                 "retrieved": grounded_sources,  # Use grounded sources for verification
             }

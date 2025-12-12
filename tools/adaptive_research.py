@@ -5,6 +5,7 @@ from typing import List, Optional, Tuple
 from api.logging_setup import get_logger
 from api.state import Chunk, SearchQuery
 from tools.planner import heuristic_plan
+from tools.topic_utils import detect_query_topic
 
 # Minimum average similarity score to consider context relevant
 MIN_RELEVANCE_THRESHOLD = 0.3
@@ -34,6 +35,12 @@ def assess_context(
 
     # Check 1: Do we have enough chunks?
     insufficient_chunks = len(retrieved) < min_chunks
+    if len(retrieved) == 0:
+        warnings.append("No retrieved context; triggering adaptive search.")
+        logger.warning(
+            "assess_context_no_chunks",
+            extra={"retrieved": 0, "required": min_chunks, "query": query},
+        )
 
     # Check 2: Are the chunks relevant enough? (if scores provided)
     low_relevance = False
@@ -87,18 +94,50 @@ def refine_plan(
 ) -> List[SearchQuery]:
     """Produce additional search tasks based on the original query."""
     logger = get_logger(__name__, run_id=run_id)
+    topic = detect_query_topic(query)
+    preferred_domains: List[str] = []
+    if topic:
+        try:
+            from tools.search import PREFERRED_DOMAINS_BY_TOPIC
+
+            preferred_domains = list(PREFERRED_DOMAINS_BY_TOPIC.get(topic, []))
+        except Exception:
+            preferred_domains = []
     logger.info(
         "refine_plan_start",
-        extra={"query": query, "current_plan_tasks": len(current_plan)},
+        extra={
+            "query": query,
+            "current_plan_tasks": len(current_plan),
+            "topic": topic,
+            "preferred_domains": preferred_domains,
+        },
     )
+    hint_domains = preferred_domains[:2]
+
+    if hint_domains:
+        new_tasks = [
+            SearchQuery(
+                text=f"{query} site:{domain}",
+                rationale="Adaptive domain-focused search",
+                topic=topic or "",
+                preferred_domains=preferred_domains,
+            )
+            for domain in hint_domains
+        ]
+        logger.info(
+            "refine_plan_complete",
+            extra={"new_tasks": len(new_tasks), "strategy": "topic_domains"},
+        )
+        return new_tasks
+
     if current_plan:
-        # Reuse heuristic planner to broaden scope slightly.
         new_tasks = heuristic_plan(f"{query} statistics trends impact", max_tasks=2)
         logger.info(
             "refine_plan_complete",
             extra={"new_tasks": len(new_tasks), "strategy": "broadened_scope"},
         )
         return new_tasks
+
     new_tasks = heuristic_plan(query, max_tasks=2)
     logger.info(
         "refine_plan_complete",

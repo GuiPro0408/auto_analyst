@@ -6,6 +6,7 @@ from typing import List, Optional, Tuple
 
 from api.logging_setup import get_logger
 from api.state import SearchQuery
+from tools.topic_utils import detect_query_topic
 
 
 # Temporal keywords that indicate time-sensitive queries
@@ -71,6 +72,25 @@ def detect_time_sensitive(query: str) -> Tuple[bool, List[str]]:
             matched.append(keyword)
 
     return len(matched) > 0, matched
+
+
+def _build_search_query(text: str, rationale: str) -> SearchQuery:
+    """Create a SearchQuery enriched with topic and preferred domains."""
+    topic = detect_query_topic(text)
+    preferred_domains: List[str] = []
+    if topic:
+        try:
+            from tools.search import PREFERRED_DOMAINS_BY_TOPIC
+
+            preferred_domains = list(PREFERRED_DOMAINS_BY_TOPIC.get(topic, []))
+        except Exception:
+            preferred_domains = []
+    return SearchQuery(
+        text=text,
+        rationale=rationale,
+        topic=topic or "",
+        preferred_domains=preferred_domains,
+    )
 
 
 def _extract_topic_keywords(query: str) -> List[str]:
@@ -247,7 +267,9 @@ def heuristic_plan(
 
     tasks = []
     for text in seeds[:max_tasks]:
-        tasks.append(SearchQuery(text=text, rationale="Heuristic topic-aware query"))
+        tasks.append(
+            _build_search_query(text=text, rationale="Heuristic topic-aware query")
+        )
         logger.debug(
             "planner_task_created",
             extra={"query": text, "rationale": "Heuristic topic-aware query"},
@@ -271,14 +293,13 @@ def plan_query(
     max_tasks: int = 4,
     conversation_context: Optional[str] = None,
 ) -> Tuple[List[SearchQuery], bool]:
-    """Use an instruct model (if provided) to plan; otherwise fall back to heuristics.
+    """Generate search tasks using heuristics.
 
-    Returns:
-        Tuple of (search_tasks, is_time_sensitive)
+    Note: LLM planning moved to smart_search.py. This function now only
+    uses heuristics for fallback scenarios.
     """
     logger = get_logger(__name__)
 
-    # Detect if query is time-sensitive
     time_sensitive, matched_keywords = detect_time_sensitive(query)
 
     logger.info(
@@ -286,79 +307,12 @@ def plan_query(
         extra={
             "query": query,
             "max_tasks": max_tasks,
-            "has_llm": llm is not None,
             "time_sensitive": time_sensitive,
             "temporal_keywords": matched_keywords,
             "conversation_context": bool(conversation_context),
         },
     )
 
-    if not llm:
-        logger.debug("plan_query_using_heuristic", extra={"reason": "no_llm_provided"})
-        tasks = heuristic_plan(
-            query,
-            max_tasks=max_tasks,
-            time_sensitive=time_sensitive,
-            context=conversation_context,
-        )
-        return tasks, time_sensitive
-
-    context_block = ""
-    if conversation_context:
-        trimmed_context = " ".join(conversation_context.split())
-        if len(trimmed_context) > 800:
-            trimmed_context = trimmed_context[-800:]
-        context_block = (
-            "\nPrior conversation context (use to resolve references like 'it' or 'they'):\n"
-            f"{trimmed_context}\n"
-        )
-
-    prompt = (
-        "You are a research planner. Break the user question into at most "
-        f"{max_tasks} focused web search tasks. Use concise, self-contained queries. "
-        "Return each task on its own line as '<query> -- <rationale>'.\n"
-        f"User question: {query}{context_block}"
-    )
-    logger.debug("planner_llm_prompt", extra={"prompt_length": len(prompt)})
-    try:
-        result = llm(prompt)[0]["generated_text"]
-        logger.debug(
-            "planner_llm_response",
-            extra={"response_length": len(result), "response_preview": result[:200]},
-        )
-        candidates = _parse_lines(result)
-        logger.debug(
-            "planner_parsed_candidates",
-            extra={"candidate_count": len(candidates)},
-        )
-        tasks: List[SearchQuery] = []
-        for line in candidates[:max_tasks]:
-            if "--" in line:
-                q, rationale = [part.strip() for part in line.split("--", 1)]
-            else:
-                q, rationale = line.strip(), "LLM derived search task"
-            tasks.append(SearchQuery(text=q, rationale=rationale))
-            logger.debug(
-                "planner_llm_task_created",
-                extra={"query": q, "rationale": rationale},
-            )
-        if tasks:
-            logger.info(
-                "planner_llm_complete",
-                extra={"tasks": len(tasks), "max_tasks": max_tasks},
-            )
-            return tasks, time_sensitive
-    except Exception as exc:
-        logger.warning(
-            "planner_llm_failed",
-            extra={"error": str(exc), "error_type": type(exc).__name__},
-        )
-        # Swallow and fall back to heuristics; verification later can catch gaps.
-        pass
-    logger.warning(
-        "planner_fallback_heuristic",
-        extra={"max_tasks": max_tasks, "reason": "llm_failed_or_no_tasks"},
-    )
     tasks = heuristic_plan(
         query,
         max_tasks=max_tasks,

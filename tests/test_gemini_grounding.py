@@ -21,12 +21,14 @@ class TestQueryWithGrounding:
     def test_returns_failure_when_no_api_key(self, monkeypatch):
         """Should return failure when GEMINI_API_KEY is not set."""
         monkeypatch.setattr("tools.gemini_grounding.GEMINI_API_KEY", "")
+        monkeypatch.setattr("tools.gemini_grounding.GEMINI_API_KEYS", [])
+        monkeypatch.setattr("tools.gemini_grounding._key_rotator", None)
 
         result = query_with_grounding("test query")
 
         assert result.success is False
         assert result.error is not None
-        assert "GOOGLE_API_KEY not configured" in result.error
+        assert "GOOGLE_API_KEY or GOOGLE_API_KEYS not configured" in result.error
 
     def test_returns_failure_when_import_fails(self, monkeypatch):
         """Should return failure when google-genai is not installed."""

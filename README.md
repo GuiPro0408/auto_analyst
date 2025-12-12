@@ -153,8 +153,11 @@ streamlit run ui/app.py  # http://localhost:8501
 | `AUTO_ANALYST_LOG_FORMAT`        | `plain`                            | `plain` or `json`             |
 | `AUTO_ANALYST_SEARCH_RATE_LIMIT` | `1.0` seconds                      | Delay between search attempts |
 | `AUTO_ANALYST_SEARCH_RETRIES`    | `2`                                | Retry attempts for search     |
+| `AUTO_ANALYST_SMART_SEARCH`      | `true`                             | Enable LLM-assisted query analysis and validation |
+| `AUTO_ANALYST_VALIDATE_RESULTS`  | `true`                             | Use LLM to filter irrelevant search hits |
 | `AUTO_ANALYST_FETCH_RETRIES`     | `2`                                | Retry attempts for fetch      |
 | `AUTO_ANALYST_FETCH_BACKOFF`     | `1.0` seconds                      | Backoff factor for fetch      |
+| `TAVILY_API_KEY`                 | ``                                 | API key for Tavily search backend |
 | `AUTO_ANALYST_LOG_FILE`          | `auto_analyst.log`                 | Log file path                 |
 | `AUTO_ANALYST_ADAPTIVE_MAX_ITERS`| `2`                                | Adaptive search cycles        |
 | `AUTO_ANALYST_QC_MAX_PASSES`     | `1`                                | Quality control passes        |
@@ -165,6 +168,7 @@ Some backends require API credentials that **must be supplied through environmen
 
 - `GOOGLE_API_KEY` — required for the Gemini backend (`AUTO_ANALYST_LLM_BACKEND=gemini`).
 - `HUGGINGFACE_API_TOKEN` — required when using the Hugging Face Inference backend.
+- `TAVILY_API_KEY` — recommended for the Tavily search backend (more reliable web results).
 
 Create or edit your local `.env` file and add placeholders:
 
@@ -172,6 +176,9 @@ Create or edit your local `.env` file and add placeholders:
 GOOGLE_API_KEY=YOUR_GOOGLE_API_KEY
 HUGGINGFACE_API_TOKEN=YOUR_HF_API_TOKEN
 AUTO_ANALYST_LLM_BACKEND=gemini
+AUTO_ANALYST_SMART_SEARCH=true
+AUTO_ANALYST_VALIDATE_RESULTS=true
+TAVILY_API_KEY=tvly-xxxxxxxxxxxxx
 ```
 
 Keep the `.env` file out of source control when filling in real credentials, and rotate any keys that may have been exposed previously.

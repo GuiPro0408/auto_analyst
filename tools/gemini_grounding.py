@@ -8,13 +8,67 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from api.config import GEMINI_API_KEY, GEMINI_MODEL
+from api.config import GEMINI_API_KEY, GEMINI_API_KEYS, GEMINI_MODEL
 from api.logging_setup import get_logger
 
 # Retry configuration
-MAX_RETRIES = 3
+MAX_RETRIES_PER_KEY = 1
 BASE_BACKOFF_SECONDS = 1.0
 MAX_BACKOFF_SECONDS = 8.0
+
+
+class APIKeyRotator:
+    """Manages rotation through multiple API keys on rate limits."""
+
+    def __init__(self, api_keys: list[str]):
+        self._keys = api_keys if api_keys else []
+        self._current_index = 0
+        self._rate_limited_keys: set[str] = set()
+
+    @property
+    def current_key(self) -> str | None:
+        """Get current API key, skipping rate-limited ones."""
+        if not self._keys:
+            return None
+        # Try to find a non-rate-limited key
+        for _ in range(len(self._keys)):
+            key = self._keys[self._current_index]
+            if key not in self._rate_limited_keys:
+                return key
+            self._current_index = (self._current_index + 1) % len(self._keys)
+        # All keys rate limited, reset and return current
+        self._rate_limited_keys.clear()
+        return self._keys[self._current_index]
+
+    def mark_rate_limited(self, key: str) -> bool:
+        """Mark key as rate limited and rotate. Returns True if more keys available."""
+        self._rate_limited_keys.add(key)
+        self._current_index = (self._current_index + 1) % len(self._keys)
+        return len(self._rate_limited_keys) < len(self._keys)
+
+    def reset(self) -> None:
+        """Reset rate limit tracking (e.g., after successful request)."""
+        self._rate_limited_keys.clear()
+
+    @property
+    def total_keys(self) -> int:
+        return len(self._keys)
+
+    @property
+    def available_keys(self) -> int:
+        return len(self._keys) - len(self._rate_limited_keys)
+
+
+# Global key rotator instance
+_key_rotator: APIKeyRotator | None = None
+
+
+def _get_key_rotator() -> APIKeyRotator:
+    """Get or initialize the global API key rotator."""
+    global _key_rotator
+    if _key_rotator is None:
+        _key_rotator = APIKeyRotator(GEMINI_API_KEYS)
+    return _key_rotator
 
 
 @dataclass
@@ -120,14 +174,21 @@ def query_with_grounding(
         GroundingResult with answer, sources, and metadata.
     """
     logger = get_logger(__name__, run_id=run_id)
-    logger.info("grounding_query_start", extra={"query": query[:100]})
+    key_rotator = _get_key_rotator()
+    logger.info(
+        "grounding_query_start",
+        extra={
+            "query": query[:100],
+            "total_api_keys": key_rotator.total_keys,
+        },
+    )
 
-    if not GEMINI_API_KEY:
+    if key_rotator.total_keys == 0:
         logger.error("grounding_no_api_key")
         return GroundingResult(
             answer="",
             success=False,
-            error="GOOGLE_API_KEY not configured",
+            error="GOOGLE_API_KEY or GOOGLE_API_KEYS not configured",
         )
 
     try:
@@ -141,8 +202,9 @@ def query_with_grounding(
             error="google-genai package not installed. Run: pip install google-genai",
         )
 
-    # Create client with API key
-    client = genai.Client(api_key=GEMINI_API_KEY)
+    # Get current API key from rotator
+    current_api_key = key_rotator.current_key
+    client = genai.Client(api_key=current_api_key)
 
     # Configure Google Search grounding tool (new API for Gemini 2.0+)
     try:
@@ -159,15 +221,25 @@ def query_with_grounding(
     last_error: Optional[Exception] = None
     backoff = BASE_BACKOFF_SECONDS
     target_model = model_name or GEMINI_MODEL
+    total_attempts = MAX_RETRIES_PER_KEY * max(key_rotator.total_keys, 1)
+    attempt = 0
 
-    for attempt in range(1, MAX_RETRIES + 1):
+    while attempt < total_attempts:
+        attempt += 1
+        current_api_key = key_rotator.current_key
         try:
+            # Recreate client with current key (may have rotated)
+            client = genai.Client(api_key=current_api_key)
             logger.debug(
                 "grounding_attempt",
                 extra={
                     "attempt": attempt,
-                    "max_retries": MAX_RETRIES,
+                    "total_attempts": total_attempts,
                     "model": target_model,
+                    "api_key_suffix": (
+                        current_api_key[-8:] if current_api_key else "none"
+                    ),
+                    "available_keys": key_rotator.available_keys,
                 },
             )
 
@@ -199,6 +271,8 @@ def query_with_grounding(
                     grounding_metadata, run_id=run_id
                 )
 
+                # Success - reset rate limit tracking
+                key_rotator.reset()
                 logger.info(
                     "grounding_query_success",
                     extra={
@@ -206,6 +280,9 @@ def query_with_grounding(
                         "sources_count": len(sources),
                         "web_queries": web_queries,
                         "attempt": attempt,
+                        "api_key_suffix": (
+                            current_api_key[-8:] if current_api_key else "none"
+                        ),
                     },
                 )
 
@@ -235,17 +312,33 @@ def query_with_grounding(
                 or "quota" in error_str.lower()
             ):
                 last_error = exc
+                # Try rotating to another API key
+                has_more_keys = key_rotator.mark_rate_limited(current_api_key or "")
                 logger.warning(
                     "grounding_rate_limited",
                     extra={
                         "attempt": attempt,
                         "backoff_seconds": backoff,
                         "error": error_str,
+                        "api_key_suffix": (
+                            current_api_key[-8:] if current_api_key else "none"
+                        ),
+                        "rotated_to_new_key": has_more_keys,
+                        "available_keys": key_rotator.available_keys,
                     },
                 )
-                if attempt < MAX_RETRIES:
-                    time.sleep(backoff)
-                    backoff = min(backoff * 2, MAX_BACKOFF_SECONDS)
+                if not has_more_keys:
+                    logger.warning(
+                        "grounding_rate_limited_exhausted_keys",
+                        extra={"attempt": attempt, "total_attempts": total_attempts},
+                    )
+                    return GroundingResult(
+                        answer="",
+                        success=False,
+                        error="All Gemini API keys rate limited; skipping grounding.",
+                    )
+                if attempt < total_attempts:
+                    time.sleep(0.5)
                 continue
 
             # Check for transient errors
@@ -263,7 +356,7 @@ def query_with_grounding(
                         "error_type": error_type,
                     },
                 )
-                if attempt < MAX_RETRIES:
+                if attempt < total_attempts:
                     time.sleep(backoff)
                     backoff = min(backoff * 2, MAX_BACKOFF_SECONDS)
                 continue
@@ -280,10 +373,14 @@ def query_with_grounding(
             )
 
     # All retries exhausted
-    error_msg = f"Grounding failed after {MAX_RETRIES} attempts: {last_error}"
+    error_msg = f"Grounding failed after {attempt} attempts across {key_rotator.total_keys} API key(s): {last_error}"
     logger.error(
         "grounding_all_retries_exhausted",
-        extra={"error": str(last_error), "attempts": MAX_RETRIES},
+        extra={
+            "error": str(last_error),
+            "attempts": attempt,
+            "total_keys": key_rotator.total_keys,
+        },
     )
     return GroundingResult(
         answer="",
