@@ -22,7 +22,7 @@ logger = get_logger(__name__)
 log = get_logger("api.graph.plan", run_id=state.get("run_id"))
 ```
 
-**Never use `logging.getLogger()` directly**—it bypasses the centralized configuration.
+**Never use `logging.getLogger()` directly** — it bypasses the centralized configuration.
 
 ## Run Correlation IDs
 
@@ -70,11 +70,12 @@ def my_node(state: Dict):
 
 ## Configuration (Environment Variables)
 
-| Variable                  | Default | Options                             |
-| ------------------------- | ------- | ----------------------------------- |
-| `AUTO_ANALYST_LOG_LEVEL`  | `INFO`  | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
-| `AUTO_ANALYST_LOG_FORMAT` | `plain` | `plain`, `json`                     |
-| `AUTO_ANALYST_LOG_FILE`   | (none)  | Path to log file                    |
+| Variable                     | Default           | Options                             |
+| ---------------------------- | ----------------- | ----------------------------------- |
+| `AUTO_ANALYST_LOG_LEVEL`     | `DEBUG`           | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+| `AUTO_ANALYST_LOG_FORMAT`    | `plain`           | `plain`, `json`                     |
+| `AUTO_ANALYST_LOG_FILE`      | `auto_analyst.log`| Path to log file                    |
+| `AUTO_ANALYST_LOG_REDACT_QUERIES` | `false`      | `true`, `false`                     |
 
 ## Output Formats
 
@@ -95,6 +96,41 @@ def my_node(state: Dict):
   "run_id": "abc-123"
 }
 ```
+
+## Log Formatters
+
+The logging system uses custom formatters in `api/logging_setup.py`:
+
+```python
+class _DefaultFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        if not hasattr(record, "run_id"):
+            record.run_id = "-"
+        return super().format(record)
+
+class _JsonFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        payload = {
+            "time": self.formatTime(record, self.datefmt),
+            "level": record.levelname,
+            "name": record.name,
+            "message": record.getMessage(),
+            "run_id": getattr(record, "run_id", "-"),
+        }
+        if record.exc_info:
+            payload["exc_info"] = self.formatException(record.exc_info)
+        return json.dumps(payload)
+```
+
+## Query Redaction
+
+For privacy, enable query redaction in production:
+
+```bash
+AUTO_ANALYST_LOG_REDACT_QUERIES=true
+```
+
+This redacts sensitive fields (`query`, `task_queries`, `urls`) in log output.
 
 ## Best Practices
 
@@ -117,13 +153,59 @@ def my_node(state: Dict):
    - `__name__` for other modules
 
 4. **Pass `run_id` through function calls** when logging outside nodes:
+
    ```python
    def fetch_url(result: SearchResult, run_id: str | None = None):
        log = get_logger("tools.fetcher", run_id=run_id)
    ```
 
+5. **Log start/complete events** with timing:
+
+   ```python
+   log.info("operation_start", extra={"input_count": len(data)})
+   # ... work ...
+   log.info("operation_complete", extra={
+       "output_count": len(result),
+       "duration_ms": (perf_counter() - start) * 1000
+   })
+   ```
+
+6. **Include relevant context** in log extras:
+
+   ```python
+   log.info("fetch_complete", extra={
+       "documents": len(documents),
+       "from_results": len(search_results),
+       "failed": fetch_failed,
+       "chunks": len(chunks),
+   })
+   ```
+
+## Standard Log Event Names
+
+Use consistent event names across the codebase:
+
+| Event Pattern          | Usage                                    |
+| ---------------------- | ---------------------------------------- |
+| `*_start`              | Beginning of an operation                |
+| `*_complete`           | Successful completion                    |
+| `*_failed`             | Operation failure                        |
+| `*_skip`               | Operation skipped (with reason)          |
+| `*_retry`              | Retrying an operation                    |
+| `*_cache_hit`          | Retrieved from cache                     |
+| `*_cache_miss`         | Not found in cache                       |
+| `*_rate_limited`       | API rate limit encountered               |
+
 ## File Locations
 
-- `api/logging_setup.py` - Logger factory and formatters
-- `api/config.py` - Log configuration constants
-Default to writing logs to `auto_analyst.log` via `AUTO_ANALYST_LOG_FILE`. Prefer JSON format in production (`AUTO_ANALYST_LOG_FORMAT=json`) and INFO level. Ensure run_id is present in all log lines. Do not disable logging in tests; accept file output in repo root. 
+- `api/logging_setup.py` — Logger factory and formatters
+- `api/config.py` — Log configuration constants
+
+## Production Recommendations
+
+- Default to `AUTO_ANALYST_LOG_FILE=auto_analyst.log` for file output
+- Use JSON format in production (`AUTO_ANALYST_LOG_FORMAT=json`)
+- Use INFO level for normal operation, DEBUG for troubleshooting
+- Ensure `run_id` is present in all log lines
+- Enable query redaction for sensitive deployments
+- Do not disable logging in tests; accept file output in repo root

@@ -4,9 +4,13 @@ applyTo: "evaluation/**"
 
 # Evaluation Guidelines
 
+## Overview
+
+Auto-Analyst uses embedding-based RAG evaluation metrics implemented in `evaluation/metrics.py`. All metrics use cosine similarity via sentence-transformers embeddings.
+
 ## RAG Metrics
 
-Five metrics are implemented in `evaluation/metrics.py`:
+Five metrics are implemented:
 
 | Metric                   | Function                 | Range | Interpretation                                      |
 | ------------------------ | ------------------------ | ----- | --------------------------------------------------- |
@@ -16,11 +20,13 @@ Five metrics are implemented in `evaluation/metrics.py`:
 | **Answer Correctness**   | `answer_correctness()`   | 0-1   | Direct similarity to ground truth                   |
 | **Answer Hallucination** | `answer_hallucination()` | 0-1   | Fraction of unsupported sentences (lower is better) |
 
-## Metric Implementations
+## Core Implementation
 
-All metrics use embedding-based similarity via `tools/models.py:load_embedding_model()`:
+All metrics use batched embedding for efficiency:
 
 ```python
+from tools.models import load_embedding_model
+
 def _cosine(a: np.ndarray, b: np.ndarray) -> float:
     denom = (np.linalg.norm(a) * np.linalg.norm(b)) + 1e-10
     return float(np.dot(a, b) / denom)
@@ -50,7 +56,7 @@ results = evaluate_all(
 
 ## Evaluation Dataset Format
 
-JSON file with list of evaluation items (see `data/sample_eval.json`):
+JSON file with list of evaluation items:
 
 ```json
 [
@@ -69,14 +75,65 @@ JSON file with list of evaluation items (see `data/sample_eval.json`):
 python evaluation/run_evaluation.py --dataset data/sample_eval.json --model all-MiniLM-L6-v2
 ```
 
-## Thresholds
+## Default Thresholds
 
-Default thresholds in `evaluate_all()`:
+Thresholds in `evaluate_all()`:
 
 - **Context sufficiency**: 0.5 (contexts with similarity >= 0.5 are "sufficient")
 - **Hallucination detection**: 0.4 (sentences with max context similarity < 0.4 are "hallucinated")
 
 Adjust based on your embedding model's similarity distribution.
+
+## Hallucination Detection
+
+The `answer_hallucination()` metric uses batched embedding for efficiency:
+
+```python
+def answer_hallucination(
+    answer: str, contexts: List[str], model_name: str, threshold: float = 0.4
+) -> float:
+    """Fraction of sentences that are unsupported by any context (lower is better)."""
+    sentences = [s.strip() for s in re.split(r"[.!?]", answer) if s.strip()]
+    
+    # Batch embed: contexts first, then all sentences
+    all_texts = contexts + sentences
+    all_embeddings = _embed_texts(all_texts, model_name=model_name)
+    ctx_embeddings = all_embeddings[: len(contexts)]
+    sent_embeddings = all_embeddings[len(contexts) :]
+    
+    hallucinatory = 0
+    for sent_vec in sent_embeddings:
+        sims = [_cosine(sent_vec, ctx_vec) for ctx_vec in ctx_embeddings]
+        supported = max(sims) >= threshold
+        if not supported:
+            hallucinatory += 1
+    return hallucinatory / len(sentences)
+```
+
+## Quality Control Integration
+
+The pipeline uses `tools/quality_control.py` for runtime quality assessment:
+
+```python
+from tools.quality_control import assess_answer, improve_answer
+
+# Heuristic-based assessment (no LLM call)
+assessment = assess_answer(
+    question=query,
+    answer=answer,
+    contexts=retrieved_chunks,
+    retrieval_scores=scores,
+    run_id=run_id,
+)
+
+# Checks performed:
+# 1. Answer is not empty
+# 2. Supporting contexts exist
+# 3. Answer has citations [n]
+# 4. No fallback phrases ("Unable to generate", etc.)
+# 5. Retrieval scores above minimum threshold
+# 6. List-style questions have structured format
+```
 
 ## Adding New Metrics
 
@@ -97,6 +154,13 @@ def evaluate_all(...) -> Dict[str, float]:
 ```
 
 3. Add test in `tests/test_evaluation_metrics.py`.
+
+## Best Practices
+
+1. **Use batched embedding** — Avoid embedding one text at a time
+2. **Handle edge cases** — Empty answers, empty contexts
+3. **Configure thresholds** — Adjust based on embedding model characteristics
+4. **Log metric values** — Include in pipeline logging for debugging
 
 ## Interpretation Guidelines
 
