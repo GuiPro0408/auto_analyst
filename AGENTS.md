@@ -13,7 +13,7 @@ Auto-Analyst is an autonomous research assistant powered by a LangGraph RAG pipe
 - **LLM Backend:** Gemini 2.0 Flash (default), HuggingFace Inference API
 - **Embeddings:** sentence-transformers (`all-MiniLM-L6-v2`)
 - **Vector Store:** ChromaDB (default), FAISS (alternative)
-- **Search:** Tavily, Gemini Grounding (Google Search), Wikipedia API
+- **Search:** Tavily, Gemini Grounding (Google Search)
 - **UI:** Streamlit
 - **Testing:** pytest
 - **Parsing:** BeautifulSoup, pdfplumber

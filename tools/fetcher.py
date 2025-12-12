@@ -76,7 +76,7 @@ def fetch_url(
         extra={"url": result.url, "source": result.source, "timeout": timeout},
     )
 
-    # If result already has pre-fetched content (e.g., Wikipedia), use it directly
+    # If result already has pre-fetched content (e.g., grounded search), use it directly
     if hasattr(result, "content") and result.content:
         logger.info(
             "fetch_prefetched_content",

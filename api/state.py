@@ -19,7 +19,7 @@ class SearchResult:
     title: str
     snippet: str = ""
     source: str = "web"
-    content: str = ""  # Pre-fetched content (e.g., Wikipedia summaries)
+    content: str = ""  # Pre-fetched content (e.g., grounded search summaries)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 

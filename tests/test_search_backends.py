@@ -13,32 +13,6 @@ class DummyResponse:
         return self._json
 
 
-def test_wikipedia_backend_returns_results(monkeypatch):
-    """Test WikipediaBackend parses API response correctly."""
-    backend = search.WikipediaBackend()
-    json_payload = {
-        "query": {
-            "search": [
-                {
-                    "title": "Test Article",
-                    "snippet": "This is a <span class=\"searchmatch\">test</span> snippet.",
-                }
-            ]
-        }
-    }
-
-    def fake_get(*_, **__):
-        return DummyResponse(json_data=json_payload)
-
-    monkeypatch.setattr(search.requests, "get", fake_get)
-
-    results = backend.search("test", max_results=1)
-    assert len(results) == 1
-    assert results[0].source == "wikipedia"
-    assert "test" in results[0].snippet.lower()
-    assert "searchmatch" not in results[0].snippet  # HTML cleaned
-
-
 def test_run_search_tasks_falls_back_to_gemini(monkeypatch):
     class EmptyBackend(search.SearchBackend):
         name = "empty"
@@ -87,16 +61,16 @@ def test_run_search_tasks_fallback_chain(monkeypatch):
         def supports_topic(self, *_):
             return True
 
-    class WikiBackend(search.SearchBackend):
-        name = "wikipedia"
+    class TavilyBackend(search.SearchBackend):
+        name = "tavily"
 
         def search(self, *_, **__):
             return [
                 search.SearchResult(
-                    url="https://en.wikipedia.org/wiki/Premier_League",
-                    title="Premier League",
+                    url="https://www.premierleague.com/table",
+                    title="Premier League Table",
                     snippet="Premier League standings",
-                    source="wikipedia",
+                    source="tavily",
                     content="Premier League standings",
                 )
             ]
@@ -106,20 +80,20 @@ def test_run_search_tasks_fallback_chain(monkeypatch):
 
     monkeypatch.setattr(search, "SEARCH_BACKENDS", ["empty"])
     monkeypatch.setattr(
-        search, "FALLBACK_BACKEND_ORDER", ["wikipedia", "gemini_grounding"]
+        search, "FALLBACK_BACKEND_ORDER", ["tavily", "gemini_grounding"]
     )
     monkeypatch.setattr(
         search,
         "get_backend",
-        lambda name, **__: WikiBackend()
-        if name == "wikipedia"
+        lambda name, **__: TavilyBackend()
+        if name == "tavily"
         else (EmptyBackend() if name == "empty" else None),
     )
 
     tasks = [search.SearchQuery(text="current premier league standings", rationale="")]
     results, warnings = search.run_search_tasks(tasks, max_results=3)
 
-    assert any(r.source == "wikipedia" for r in results)
+    assert any(r.source == "tavily" for r in results)
     assert warnings == [] or warnings == ["No search results found; consider refining the query."]
 
 

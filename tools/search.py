@@ -248,87 +248,10 @@ class TavilyBackend(SearchBackend):
             return []
 
 
-class WikipediaBackend(SearchBackend):
-    """Wikipedia API search backend.
-
-    Free and reliable, good for factual queries.
-    Uses Wikipedia's official API.
-    """
-
-    name = "wikipedia"
-
-    def search(
-        self,
-        query: str,
-        max_results: int = 5,
-        run_id: Optional[str] = None,
-    ) -> List[SearchResult]:
-        """Search Wikipedia using the official API."""
-        from urllib.parse import quote_plus
-
-        logger = get_logger(__name__, run_id=run_id)
-        logger.debug("wikipedia_search_start", extra={"query": query[:50]})
-
-        results: List[SearchResult] = []
-
-        try:
-            # Use Wikipedia's API for search
-            api_url = "https://en.wikipedia.org/w/api.php"
-            params = {
-                "action": "query",
-                "list": "search",
-                "srsearch": query,
-                "srlimit": max_results,
-                "format": "json",
-                "srprop": "snippet|titlesnippet",
-            }
-
-            resp = requests.get(api_url, params=params, timeout=10)
-            resp.raise_for_status()
-            data = resp.json()
-
-            for item in data.get("query", {}).get("search", []):
-                title = item.get("title", "")
-                snippet = item.get("snippet", "")
-                # Clean HTML from snippet
-                snippet = snippet.replace('<span class="searchmatch">', "").replace(
-                    "</span>", ""
-                )
-
-                url = f"https://en.wikipedia.org/wiki/{quote_plus(title.replace(' ', '_'))}"
-
-                results.append(
-                    SearchResult(
-                        url=url,
-                        title=title,
-                        snippet=snippet[:500],
-                        source="wikipedia",
-                    )
-                )
-
-            logger.info(
-                "wikipedia_search_complete",
-                extra={"results": len(results), "query": query[:50]},
-            )
-            return results
-
-        except Exception as exc:
-            logger.warning(
-                "wikipedia_search_failed",
-                extra={"error": str(exc)[:100], "query": query[:50]},
-            )
-            return []
-
-    def supports_topic(self, topic: str) -> bool:
-        """Wikipedia is good for most factual topics."""
-        return True
-
-
 # Registry of available search backends
 _BACKEND_REGISTRY: dict[str, type[SearchBackend]] = {
     SOURCE_GEMINI_GROUNDING: GeminiGroundingBackend,
     SOURCE_TAVILY: TavilyBackend,
-    "wikipedia": WikipediaBackend,
 }
 
 
