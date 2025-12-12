@@ -225,12 +225,3 @@ class TestGeminiGroundingBackend:
         assert len(results) == 1
         assert results[0].title == "Gemini Grounded Response"
         assert results[0].content == "The answer is 42."
-
-    def test_supports_all_topics(self):
-        """Gemini grounding should support all topic categories."""
-        backend = GeminiGroundingBackend()
-
-        assert backend.supports_topic("entertainment") is True
-        assert backend.supports_topic("science") is True
-        assert backend.supports_topic("news") is True
-        assert backend.supports_topic("technology") is True

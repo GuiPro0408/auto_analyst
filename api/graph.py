@@ -194,53 +194,32 @@ def build_workflow(
             fetch_failed = len(search_results) - len(documents)
         if not documents:
             warnings.append("No documents fetched from search results.")
+
+        chunk_start = perf_counter()
+        chunks: List[Chunk] = []
+        if documents:
+            chunks = chunk_documents(documents, chunker, run_id=state.get("run_id"))
+            store.upsert(chunks)
+
         log.info(
-            "fetch_complete",
+            "fetch_chunk_complete",
             extra={
                 "documents": len(documents),
                 "from_results": len(search_results),
                 "success": len(documents),
                 "failed": fetch_failed,
+                "chunks": len(chunks),
+                "chunk_duration_ms": (perf_counter() - chunk_start) * 1000,
                 "duration_ms": (perf_counter() - start) * 1000,
             },
         )
+        if not chunks:
+            warnings.append("No chunks available; downstream answers may be empty.")
+
         return {
             "documents": documents,
             "warnings": warnings,
-            "grounded_answer": state.get("grounded_answer", ""),
-            "grounded_sources": state.get("grounded_sources", []),
-        }
-
-    def chunk_node(state: GraphState) -> GraphState:
-        log = get_logger("api.graph.chunk", run_id=state.get("run_id"))
-        start = perf_counter()
-        documents = state.get("documents", [])
-        log.info(
-            "chunk_start",
-            extra={
-                "documents": len(documents),
-                "total_content_chars": sum(len(d.content) for d in documents),
-            },
-        )
-        # Incrementally add new chunks instead of clearing to preserve prior context
-        chunks = chunk_documents(documents, chunker, run_id=state.get("run_id"))
-        store.upsert(chunks)
-        log.info(
-            "chunk_complete",
-            extra={
-                "chunks": len(chunks),
-                "duration_ms": (perf_counter() - start) * 1000,
-                "avg_chunk_length": (
-                    sum(len(c.text) for c in chunks) / len(chunks) if chunks else 0
-                ),
-            },
-        )
-        warnings = state.get("warnings", [])
-        if not chunks:
-            warnings.append("No chunks available; downstream answers may be empty.")
-        return {
             "chunks": chunks,
-            "warnings": warnings,
             "grounded_answer": state.get("grounded_answer", ""),
             "grounded_sources": state.get("grounded_sources", []),
         }
@@ -593,7 +572,6 @@ def build_workflow(
     graph.add_node("plan", lambda state: plan_node(cast(GraphState, state)))
     graph.add_node("search", lambda state: search_node(cast(GraphState, state)))
     graph.add_node("fetch", lambda state: fetch_node(cast(GraphState, state)))
-    graph.add_node("chunk", lambda state: chunk_node(cast(GraphState, state)))
     graph.add_node("retrieve", lambda state: retrieve_node(cast(GraphState, state)))
     graph.add_node("generate", lambda state: generate_node(cast(GraphState, state)))
     graph.add_node("verify", lambda state: verify_node(cast(GraphState, state)))
@@ -603,8 +581,7 @@ def build_workflow(
     graph.add_edge(START, "plan")
     graph.add_edge("plan", "search")
     graph.add_edge("search", "fetch")
-    graph.add_edge("fetch", "chunk")
-    graph.add_edge("chunk", "retrieve")
+    graph.add_edge("fetch", "retrieve")
     graph.add_edge("retrieve", "adaptive")
     graph.add_edge("adaptive", "generate")
     graph.add_edge("generate", "verify")

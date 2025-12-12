@@ -7,36 +7,7 @@ from typing import List, Optional, Tuple
 from api.logging_setup import get_logger
 from api.state import SearchQuery
 from tools.topic_utils import detect_query_topic
-
-
-# Temporal keywords that indicate time-sensitive queries
-TEMPORAL_KEYWORDS = {
-    "upcoming",
-    "coming",
-    "next",
-    "new",
-    "latest",
-    "recent",
-    "current",
-    "this season",
-    "this year",
-    "this month",
-    "this week",
-    "today",
-    "2024",
-    "2025",
-    "2026",  # Current and near years
-    "release",
-    "releases",
-    "premiere",
-    "premieres",
-    "launch",
-    "launches",
-    "announced",
-    "announcement",
-    "schedule",
-    "scheduled",
-}
+from tools.text_utils import STOPWORDS, detect_time_sensitive, extract_keywords
 
 
 def _parse_lines(text: str) -> List[str]:
@@ -58,22 +29,6 @@ def _current_season(year: int, month: int) -> str:
     return "fall"
 
 
-def detect_time_sensitive(query: str) -> Tuple[bool, List[str]]:
-    """Detect if a query is time-sensitive based on temporal keywords.
-
-    Returns:
-        Tuple of (is_time_sensitive, matched_keywords)
-    """
-    query_lower = query.lower()
-    matched = []
-
-    for keyword in TEMPORAL_KEYWORDS:
-        if keyword in query_lower:
-            matched.append(keyword)
-
-    return len(matched) > 0, matched
-
-
 def _build_search_query(text: str, rationale: str) -> SearchQuery:
     """Create a SearchQuery enriched with topic and preferred domains."""
     topic = detect_query_topic(text)
@@ -88,99 +43,7 @@ def _build_search_query(text: str, rationale: str) -> SearchQuery:
 
 def _extract_topic_keywords(query: str) -> List[str]:
     """Extract likely topic keywords from user query."""
-    # Common filler words to skip
-    stopwords = {
-        "what",
-        "which",
-        "when",
-        "where",
-        "who",
-        "how",
-        "is",
-        "are",
-        "the",
-        "a",
-        "an",
-        "for",
-        "this",
-        "that",
-        "these",
-        "those",
-        "do",
-        "does",
-        "can",
-        "could",
-        "will",
-        "would",
-        "should",
-        "may",
-        "might",
-        "to",
-        "of",
-        "in",
-        "on",
-        "at",
-        "by",
-        "with",
-        "about",
-        "from",
-        "and",
-        "or",
-        "but",
-        "if",
-        "then",
-        "so",
-        "because",
-        "as",
-        "into",
-        "through",
-        "during",
-        "before",
-        "after",
-        "above",
-        "below",
-        "between",
-        "under",
-        "again",
-        "further",
-        "once",
-        "here",
-        "there",
-        "all",
-        "each",
-        "few",
-        "more",
-        "most",
-        "other",
-        "some",
-        "such",
-        "no",
-        "nor",
-        "not",
-        "only",
-        "own",
-        "same",
-        "than",
-        "too",
-        "very",
-        "just",
-        "now",
-        "any",
-        "me",
-        "my",
-        "i",
-        "you",
-        "your",
-        "we",
-        "our",
-        "they",
-        "their",
-        "it",
-        "its",
-    }
-    words = re.findall(r"\b[a-zA-Z]+\b", query.lower())
-    keywords = [w for w in words if w not in stopwords and len(w) > 2]
-    return keywords
+    return list(extract_keywords(query, stopwords=STOPWORDS, min_len=3))
 
 
 def heuristic_plan(

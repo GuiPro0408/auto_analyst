@@ -13,7 +13,7 @@ from api.config import (
 from api.logging_setup import get_logger
 from api.state import SearchQuery, SearchResult
 from tools.gemini_grounding import GroundingResult, query_with_grounding
-from tools.topic_utils import detect_query_topic
+from tools.text_utils import STOPWORDS, detect_time_sensitive, extract_keywords
 
 BLOCKED_DOMAINS = {
     "support.google.com",
@@ -48,26 +48,12 @@ KNOWN_ROBOTS_BLOCKED_DOMAINS = {
     "usingenglish.com",
 }
 
-DEFAULT_FALLBACK_CHAIN = "tavily,gemini_grounding"
-FALLBACK_BACKEND_ORDER = [
-    name.strip().lower()
-    for name in os.getenv("AUTO_ANALYST_FALLBACK_BACKENDS", DEFAULT_FALLBACK_CHAIN).split(",")
-    if name.strip()
-]
+FALLBACK_BACKEND_ORDER = ["tavily", "gemini_grounding"]
 
-# Canonical source identifiers to avoid string drift (keep only tavily + gemini)
+# Canonical source identifiers (limited to tavily + gemini)
 SOURCE_GEMINI_GROUNDING = "gemini_grounding"
 SOURCE_TAVILY = "tavily"
 
-_SOURCE_ALIASES = {
-    "gemini": SOURCE_GEMINI_GROUNDING,
-}
-
-
-def canonical_source(name: str) -> str:
-    """Normalize backend/source identifiers to canonical values."""
-    lowered = (name or "").lower()
-    return _SOURCE_ALIASES.get(lowered, lowered)
 
 class SearchBackend(ABC):
     """Abstract base class for search backends."""
@@ -83,10 +69,6 @@ class SearchBackend(ABC):
     ) -> List[SearchResult]:
         """Execute a search and return results."""
         pass
-
-    def supports_topic(self, topic: str) -> bool:
-        """Check if this backend is suitable for a given topic category."""
-        return True  # Default: supports all topics
 
 
 class GeminiGroundingBackend(SearchBackend):
@@ -163,10 +145,6 @@ class GeminiGroundingBackend(SearchBackend):
             },
         )
         return results
-
-    def supports_topic(self, topic: str) -> bool:
-        """Gemini grounding supports all topics via Google Search."""
-        return True
 
 
 class TavilyBackend(SearchBackend):
@@ -248,21 +226,13 @@ class TavilyBackend(SearchBackend):
             return []
 
 
-# Registry of available search backends
-_BACKEND_REGISTRY: dict[str, type[SearchBackend]] = {
-    SOURCE_GEMINI_GROUNDING: GeminiGroundingBackend,
-    SOURCE_TAVILY: TavilyBackend,
-}
-
-
 def get_backend(name: str) -> Optional[SearchBackend]:
     """Get a search backend instance by name."""
     normalized = name.strip().lower()
-    if normalized == "tavily":
+    if normalized == SOURCE_GEMINI_GROUNDING or normalized == "gemini":
+        return GeminiGroundingBackend()
+    if normalized == SOURCE_TAVILY or normalized == "tavily":
         return TavilyBackend()
-    backend_class = _BACKEND_REGISTRY.get(normalized)
-    if backend_class:
-        return backend_class()
     return None
 
 
@@ -289,79 +259,6 @@ def dedupe_results(results: Iterable[SearchResult]) -> List[SearchResult]:
     return unique
 
 
-def _extract_keywords(text: str) -> set:
-    """Extract meaningful keywords from text."""
-    stopwords = {
-        "what",
-        "which",
-        "when",
-        "where",
-        "who",
-        "how",
-        "is",
-        "are",
-        "the",
-        "a",
-        "an",
-        "for",
-        "this",
-        "that",
-        "do",
-        "does",
-        "can",
-        "will",
-        "to",
-        "of",
-        "in",
-        "on",
-        "at",
-        "by",
-        "with",
-        "about",
-        "from",
-        "and",
-        "or",
-        "should",
-        "use",
-        "using",
-        "i",
-        "you",
-        "we",
-        "they",
-        "it",
-        "my",
-    }
-    words = set(text.lower().split())
-    return {w.strip(".,!?;:") for w in words if w not in stopwords and len(w) > 2}
-
-
-def _is_time_sensitive_query(query: str) -> bool:
-    """Heuristic to detect queries that need fresh/live data."""
-    q = query.lower()
-    temporal_terms = {
-        "current",
-        "currently",
-        "today",
-        "latest",
-        "now",
-        "live",
-        "standing",
-        "standings",
-        "table",
-        "ranking",
-        "released",
-        "releasing",
-        "release",
-        "upcoming",
-        "schedule",
-        "fall",
-        "spring",
-        "summer",
-        "winter",
-    }
-    return any(term in q for term in temporal_terms)
-
-
 def filter_results(
     query: str, results: List[SearchResult], preferred_domains: Optional[set] = None
 ) -> List[SearchResult]:
@@ -372,7 +269,7 @@ def filter_results(
         extra={"query": query, "input_count": len(results)},
     )
     filtered: List[SearchResult] = []
-    query_keywords = _extract_keywords(query)
+    query_keywords = extract_keywords(query, stopwords=STOPWORDS)
     blocked_count = 0
     robots_blocked_count = 0
     meta_filtered_count = 0
@@ -409,7 +306,7 @@ def filter_results(
         title = (res.title or "").lower()
         snippet = (res.snippet or "").lower()
         combined_text = f"{title} {snippet}"
-        result_keywords = _extract_keywords(combined_text)
+        result_keywords = extract_keywords(combined_text, stopwords=STOPWORDS)
 
         # Check for keyword overlap between query and result
         overlap = query_keywords & result_keywords
@@ -460,7 +357,7 @@ def run_search_tasks(
     )
     all_results: List[SearchResult] = []
     warnings: List[str] = []
-    time_sensitive = any(_is_time_sensitive_query(t.text) for t in tasks)
+    time_sensitive = any(detect_time_sensitive(t.text)[0] for t in tasks)
     backend_names = [
         backend.strip().lower() for backend in SEARCH_BACKENDS if backend.strip()
     ]
@@ -482,60 +379,47 @@ def run_search_tasks(
             backend_instances.append(gemini_backend)
             attempted_backends.add(gemini_backend.name)
 
-    def run_backends(instances: List[SearchBackend]) -> None:
-        nonlocal all_results
-        for idx, task in enumerate(tasks):
-            logger.debug(
-                "search_task_processing",
-                extra={"task_index": idx, "query": task.text, "rationale": task.rationale},
+    for idx, task in enumerate(tasks):
+        logger.debug(
+            "search_task_processing",
+            extra={
+                "task_index": idx,
+                "query": task.text,
+                "rationale": task.rationale,
+            },
+        )
+        task_results_before = len(all_results)
+        for backend in backend_instances:
+            results = backend.search(
+                task.text,
+                max_results=max_results,
+                run_id=run_id,
             )
-            task_results_before = len(all_results)
-            topic = task.topic or detect_query_topic(task.text)
-            for backend in instances:
-                if topic and not backend.supports_topic(topic):
-                    logger.debug(
-                        "search_backend_skipped_topic",
-                        extra={"backend": backend.name, "topic": topic},
-                    )
-                    continue
-                results = backend.search(
-                    task.text,
-                    max_results=max_results,
-                    run_id=run_id,
-                )
-                for res in results:
-                    res.source = canonical_source(res.source or backend.name)
-                logger.debug(
-                    "search_backend_complete",
-                    extra={
-                        "backend": backend.name,
-                        "results": len(results),
-                        "task_index": idx,
-                    },
-                )
-                all_results.extend(results)
+            for res in results:
+                res.source = res.source or backend.name
             logger.debug(
-                "search_task_complete",
+                "search_backend_complete",
                 extra={
+                    "backend": backend.name,
+                    "results": len(results),
                     "task_index": idx,
-                    "results_added": len(all_results) - task_results_before,
                 },
             )
+            all_results.extend(results)
+        logger.debug(
+            "search_task_complete",
+            extra={
+                "task_index": idx,
+                "results_added": len(all_results) - task_results_before,
+            },
+        )
 
-    def finalize_results() -> List[SearchResult]:
-        combined_query = " ".join([t.text for t in tasks])
-        deduped = dedupe_results(all_results)
-        deduped = filter_results(combined_query, deduped, preferred_domains=None)
-        return deduped
-
-    run_backends(backend_instances)
-    deduped = finalize_results()
+    combined_query = " ".join([t.text for t in tasks])
+    deduped = filter_results(combined_query, dedupe_results(all_results), preferred_domains=None)
 
     if not deduped:
         fallback_chain = [
-            name
-            for name in FALLBACK_BACKEND_ORDER
-            if name and name not in attempted_backends
+            name for name in FALLBACK_BACKEND_ORDER if name and name not in attempted_backends
         ]
         for backend_name in fallback_chain:
             backend = get_backend(backend_name)
@@ -546,8 +430,26 @@ def run_search_tasks(
                 )
                 continue
             attempted_backends.add(backend.name)
-            run_backends([backend])
-            deduped = finalize_results()
+
+            for idx, task in enumerate(tasks):
+                logger.debug(
+                    "search_fallback_task_processing",
+                    extra={"task_index": idx, "backend": backend.name, "query": task.text},
+                )
+                results = backend.search(
+                    task.text,
+                    max_results=max_results,
+                    run_id=run_id,
+                )
+                for res in results:
+                    res.source = res.source or backend.name
+                all_results.extend(results)
+
+            deduped = filter_results(
+                combined_query,
+                dedupe_results(all_results),
+                preferred_domains=None,
+            )
             if deduped:
                 logger.info(
                     "search_fallback_succeeded",

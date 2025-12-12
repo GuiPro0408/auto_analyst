@@ -5,6 +5,7 @@ from typing import Dict, List, Optional, Tuple
 
 from api.logging_setup import get_logger
 from api.state import Chunk
+from tools.text_utils import STOPWORDS, extract_keywords, requires_structured_list
 
 
 def _format_context(chunks: List[Chunk]) -> str:
@@ -127,91 +128,6 @@ def build_citations(
     return remapped_answer, citations
 
 
-def _extract_meaningful_words(text: str) -> set:
-    """Extract meaningful keywords from text, excluding stopwords.
-
-    Note: Temporal keywords (upcoming, new, latest, recent, current, next, coming)
-    are intentionally NOT filtered out to preserve time-sensitive query intent.
-    """
-    stopwords = {
-        "what",
-        "which",
-        "when",
-        "where",
-        "who",
-        "how",
-        "is",
-        "are",
-        "the",
-        "a",
-        "an",
-        "for",
-        "this",
-        "that",
-        "do",
-        "does",
-        "can",
-        "will",
-        "to",
-        "of",
-        "in",
-        "on",
-        "at",
-        "by",
-        "with",
-        "about",
-        "from",
-        "and",
-        "or",
-        "should",
-        "use",
-        "using",
-        "i",
-        "you",
-        "we",
-        "they",
-        "it",
-        "my",
-        "be",
-        "been",
-        "being",
-        "have",
-        "has",
-        "had",
-        "having",
-    }
-    words = set(re.findall(r"\b[a-z]{3,}\b", text.lower()))
-    return {w for w in words if w not in stopwords}
-
-
-def _requires_structured_list(query: str) -> bool:
-    """Detect queries that expect list- or ranking-style answers."""
-    q = query.lower()
-    triggers = {
-        "list",
-        "which",
-        "what",
-        "releases",
-        "release",
-        "releasing",
-        "upcoming",
-        "schedule",
-        "lineup",
-        "standings",
-        "ranking",
-        "rankings",
-        "top",
-        "currently",
-        "current",
-        "today",
-        "fall",
-        "spring",
-        "summer",
-        "winter",
-    }
-    return any(term in q for term in triggers)
-
-
 def generate_answer(
     llm,
     query: str,
@@ -232,17 +148,16 @@ def generate_answer(
         return "No context retrieved to answer the question.", []
 
     # Check if retrieved chunks are relevant to the query
-    # Use meaningful keyword extraction for better matching
-    query_keywords = _extract_meaningful_words(query)
+    query_keywords = extract_keywords(query, stopwords=STOPWORDS)
     logger.debug(
-        "generate_answer_keywords",
+        "generate_query_keywords",
         extra={"query_keywords": list(query_keywords)[:10]},
     )
-    relevant_chunks = []
 
+    relevant_chunks: List[Chunk] = []
     for chunk in retrieved:
         chunk_text = chunk.text or ""
-        chunk_keywords = _extract_meaningful_words(chunk_text)
+        chunk_keywords = extract_keywords(chunk_text, stopwords=STOPWORDS)
 
         # Check for keyword overlap
         overlap = query_keywords & chunk_keywords
@@ -306,7 +221,7 @@ def generate_answer(
         )
 
     list_instruction = ""
-    if _requires_structured_list(query):
+    if requires_structured_list(query):
         list_instruction = (
             "- Present the answer as a bullet or numbered list of items. "
             "For each item include the name/title and any available date/status, "

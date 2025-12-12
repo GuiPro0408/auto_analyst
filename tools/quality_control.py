@@ -5,6 +5,7 @@ from typing import Dict, List, Optional
 from api.logging_setup import get_logger
 from api.state import Chunk
 from tools.generator import generate_answer, verify_answer
+from tools.text_utils import requires_structured_list
 
 # Phrases that indicate the LLM failed to generate a proper answer
 FALLBACK_PHRASES = [
@@ -14,31 +15,6 @@ FALLBACK_PHRASES = [
     "No context retrieved",
     "No sufficient context",
 ]
-
-
-def _needs_structured_list(question: str) -> bool:
-    q = question.lower()
-    triggers = {
-        "list",
-        "releases",
-        "releasing",
-        "release",
-        "lineup",
-        "schedule",
-        "standings",
-        "ranking",
-        "table",
-        "top",
-        "currently",
-        "current",
-        "today",
-        "upcoming",
-        "fall",
-        "spring",
-        "summer",
-        "winter",
-    }
-    return any(term in q for term in triggers)
 
 
 def assess_answer(
@@ -111,7 +87,7 @@ def assess_answer(
             )
 
     # Check 6: List-style questions should return structured bullets/numbered items
-    if _needs_structured_list(question):
+    if requires_structured_list(question):
         if "-" not in answer and "1." not in answer:
             issues.append("Missing structured list format for a list-style question.")
             logger.warning("assess_answer_missing_list_structure")
