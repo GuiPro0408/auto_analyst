@@ -13,42 +13,18 @@ class DummyResponse:
         return self._json
 
 
-def test_arxiv_backend_parses_feed(monkeypatch):
-    backend = search.ArxivBackend()
-    sample_xml = """
-    <feed xmlns="http://www.w3.org/2005/Atom">
-      <entry>
-        <title>Sample Paper</title>
-        <summary>This is a sample abstract.</summary>
-        <id>http://arxiv.org/abs/1234.5678</id>
-      </entry>
-    </feed>
-    """.strip()
-
-    def fake_get(*_, **__):
-        return DummyResponse(text=sample_xml)
-
-    monkeypatch.setattr(search.requests, "get", fake_get)
-
-    results = backend.search("quantum", max_results=1)
-    assert len(results) == 1
-    assert results[0].source == "arxiv"
-    assert "sample" in results[0].snippet.lower()
-
-
-def test_openalex_backend_builds_snippet(monkeypatch):
-    backend = search.OpenAlexBackend()
+def test_wikipedia_backend_returns_results(monkeypatch):
+    """Test WikipediaBackend parses API response correctly."""
+    backend = search.WikipediaBackend()
     json_payload = {
-        "results": [
-            {
-                "display_name": "OpenAlex Paper",
-                "id": "https://openalex.org/W123",
-                "abstract_inverted_index": {
-                    "hello": [0],
-                    "world": [1],
-                },
-            }
-        ]
+        "query": {
+            "search": [
+                {
+                    "title": "Test Article",
+                    "snippet": "This is a <span class=\"searchmatch\">test</span> snippet.",
+                }
+            ]
+        }
     }
 
     def fake_get(*_, **__):
@@ -56,10 +32,11 @@ def test_openalex_backend_builds_snippet(monkeypatch):
 
     monkeypatch.setattr(search.requests, "get", fake_get)
 
-    results = backend.search("science", max_results=1)
+    results = backend.search("test", max_results=1)
     assert len(results) == 1
-    assert results[0].source == "openalex"
-    assert results[0].snippet == "hello world"
+    assert results[0].source == "wikipedia"
+    assert "test" in results[0].snippet.lower()
+    assert "searchmatch" not in results[0].snippet  # HTML cleaned
 
 
 def test_run_search_tasks_falls_back_to_gemini(monkeypatch):

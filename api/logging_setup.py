@@ -45,13 +45,25 @@ def _configure_root() -> None:
         else _DefaultFormatter(fmt=fmt)
     )
 
+    class _RedactFilter(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:  # pragma: no cover
+            if config.LOG_REDACT_QUERIES:
+                for field in ("query", "task_queries", "urls"):
+                    if hasattr(record, field):
+                        setattr(record, field, "[REDACTED]")
+            return True
+
+    redact_filter = _RedactFilter()
+
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(formatter)
+    handler.addFilter(redact_filter)
     handlers = [handler]
 
     if config.LOG_FILE_PATH:
         file_handler = logging.FileHandler(config.LOG_FILE_PATH)
         file_handler.setFormatter(formatter)
+        file_handler.addFilter(redact_filter)
         handlers.append(file_handler)
 
     logging.basicConfig(level=level, handlers=handlers)

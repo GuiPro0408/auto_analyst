@@ -7,9 +7,8 @@ An autonomous research assistant powered by a LangGraph RAG pipeline. Plans quer
 ```bash
 # Clone and setup
 git clone https://github.com/<your-username>/auto-analyst.git && cd auto-analyst
-python -m venv venv && source venv/bin/activate
+python -m venv venv && source .venv/bin/activate
 pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
-playwright install chromium
 
 # Run
 streamlit run ui/app.py  # http://localhost:8501
@@ -36,10 +35,10 @@ streamlit run ui/app.py  # http://localhost:8501
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │  SEARCH                                                                     │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐                      │
-│  │  DuckDuckGo  │  │  Wikipedia   │  │   SearxNG    │                      │
-│  │    (free)    │  │    (free)    │  │  (optional)  │                      │
-│  └──────────────┘  └──────────────┘  └──────────────┘                      │
+│  ┌──────────────┐  ┌────────────────┐                                      │
+│  │    Tavily    │  │ Gemini Ground  │                                      │
+│  │   (API)      │  │ (Google search)│                                      │
+│  └──────────────┘  └────────────────┘                                      │
 │  tools/search.py → List[SearchResult] (url, title, snippet)                 │
 └─────────────────────────────────────────────────────────────────────────────┘
                                     │
@@ -134,7 +133,7 @@ streamlit run ui/app.py  # http://localhost:8501
 | Stage        | Description                                     |
 | ------------ | ----------------------------------------------- |
 | **Plan**     | Decomposes question into targeted search tasks  |
-| **Search**   | Queries DuckDuckGo, Wikipedia, optional SearxNG |
+| **Search**   | Queries Tavily and Gemini Grounding             |
 | **Fetch**    | Downloads pages/PDFs respecting robots.txt      |
 | **Chunk**    | Token-aware splitting with metadata             |
 | **Retrieve** | Vector similarity search (ChromaDB/FAISS)       |
@@ -145,14 +144,12 @@ streamlit run ui/app.py  # http://localhost:8501
 
 | Variable                         | Default                            | Purpose                       |
 | -------------------------------- | ---------------------------------- | ----------------------------- |
-| `AUTO_ANALYST_LLM`               | `TinyLlama/TinyLlama-1.1B-Chat-v1.0` | Instruct-tuned LLM (set to a heavier model if desired) |
+| `AUTO_ANALYST_LLM`               | `gemini-2.0-flash`                 | LLM model identifier          |
 | `AUTO_ANALYST_EMBED`             | `all-MiniLM-L6-v2`                 | Embedding model               |
 | `AUTO_ANALYST_VECTOR_STORE`      | `chroma`                           | `chroma` or `faiss`           |
 | `AUTO_ANALYST_TOP_K`             | `6`                                | Retrieved chunks              |
 | `AUTO_ANALYST_LOG_LEVEL`         | `INFO`                             | `DEBUG`/`INFO`/`WARNING`      |
 | `AUTO_ANALYST_LOG_FORMAT`        | `plain`                            | `plain` or `json`             |
-| `AUTO_ANALYST_SEARCH_RATE_LIMIT` | `1.0` seconds                      | Delay between search attempts |
-| `AUTO_ANALYST_SEARCH_RETRIES`    | `2`                                | Retry attempts for search     |
 | `AUTO_ANALYST_SMART_SEARCH`      | `true`                             | Enable LLM-assisted query analysis and validation |
 | `AUTO_ANALYST_VALIDATE_RESULTS`  | `true`                             | Use LLM to filter irrelevant search hits |
 | `AUTO_ANALYST_FETCH_RETRIES`     | `2`                                | Retry attempts for fetch      |
@@ -207,7 +204,6 @@ tests/        → Unit and integration tests
 ## Prerequisites
 
 - Python 3.11+
-- Chromium for Playwright (`playwright install chromium`)
 - ~8GB disk for models (Phi-3/Mistral + embeddings)
 
 ## Notes

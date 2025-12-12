@@ -66,8 +66,8 @@ dockerrun-p8501:8501auto‑analyst
 Customisation
 Vector store: Choose between ChromaDB (default) and FAISS. Modify the vector_store.py
 helper to switch.
-Search API: Adjust the search_tool.py to use different free search providers. When using
-SearxNG, self‑host your own instance or configure an available public instance.
+Search API: Adjust the search_tool.py to use different free search providers like Tavily,
+Gemini Grounding, or Wikipedia API.
 Models: Swap in another free LLM or embedding model by changing the model identifiers in the
 configuration file.
 12. 

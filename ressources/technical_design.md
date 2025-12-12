@@ -9,7 +9,7 @@ High‑Level Components
 Component Description
 Planner Agent Decomposes the user’s question into sub‑queries and defines a plan for
 retrieval.
-Search Tool Uses free APIs (DuckDuckGo, Wikipedia, SearxNG) to find relevant web pages.
+Search Tool Uses free APIs (Tavily, Gemini Grounding, Wikipedia) to find relevant web pages.
 Respects robots.txt and rate limits.
 Fetcher & ParserDownloads web pages and PDFs, then extracts text using BeautifulSoup and
 pdfplumber . Splits long documents into overlapping chunks.
@@ -62,7 +62,7 @@ improving responsiveness.
 Technology Choices
 Models: Use open‑source LLMs (e.g., Mistral‑7B Instruct, Llama‑3.1 8B, Phi‑3) and
 sentence‑transformers embedding models.
-Search: DuckDuckGo, Wikipedia API, SearxNG (self‑hosted). All are free and do not require API
+Search: Tavily (API), Gemini Search Grounding, Wikipedia API. All are free/open-source friendly
 keys.
 Vector Store: ChromaDB for local development; FAISS as an alternative.
 Orchestration: LangGraph orchestrates the pipeline; it offers persistence, streaming and

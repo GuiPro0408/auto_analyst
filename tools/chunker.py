@@ -1,8 +1,7 @@
 """Split long documents into overlapping token-aware chunks."""
 
-import math
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 try:
     import tiktoken

@@ -1,8 +1,6 @@
 """Search tools using Gemini grounding and optional fallback backends."""
 
 import os
-import time
-import xml.etree.ElementTree as ET
 from abc import ABC, abstractmethod
 from typing import Dict, Iterable, List, Optional, Tuple
 
@@ -10,8 +8,6 @@ import requests
 
 from api.config import (
     SEARCH_BACKENDS,
-    SEARCH_RATE_LIMIT_SECONDS,
-    SEARCH_RETRIES,
     TAVILY_API_KEY,
 )
 from api.logging_setup import get_logger
@@ -35,14 +31,6 @@ BLOCKED_DOMAINS = {
     "linkedin.com",
 }
 
-PREFERRED_SPORTS_DOMAINS = {
-    "premierleague.com",
-    "bbc.co.uk/sport",
-    "bbc.com/sport",
-    "skysports.com",
-    "espn.com",
-}
-
 # Domains that often return meta-content (about language, grammar) rather than topic content
 META_CONTENT_DOMAINS = {
     "stackexchange.com",
@@ -60,45 +48,26 @@ KNOWN_ROBOTS_BLOCKED_DOMAINS = {
     "usingenglish.com",
 }
 
-PREFERRED_DOMAINS_BY_TOPIC = {
-    "entertainment": {
-        "animeschedule.net",
-        "myanimelist.net",
-        "animenewsnetwork.com",
-        "crunchyroll.com",
-        "polygon.com",
-        "ign.com",
-    },
-    "technology": {
-        "arstechnica.com",
-        "theverge.com",
-        "techcrunch.com",
-        "wired.com",
-        "github.com",
-    },
-    "science": {
-        "nature.com",
-        "science.org",
-        "nih.gov",
-        "nasa.gov",
-        "arxiv.org",
-    },
-    "news": {
-        "reuters.com",
-        "apnews.com",
-        "bbc.com",
-        "bbc.co.uk",
-        "theguardian.com",
-    },
-    "sports": set(PREFERRED_SPORTS_DOMAINS),
-}
-
-DEFAULT_FALLBACK_CHAIN = "tavily,gemini_grounding,wikipedia,ddgs,arxiv"
+DEFAULT_FALLBACK_CHAIN = "tavily,gemini_grounding"
 FALLBACK_BACKEND_ORDER = [
     name.strip().lower()
     for name in os.getenv("AUTO_ANALYST_FALLBACK_BACKENDS", DEFAULT_FALLBACK_CHAIN).split(",")
     if name.strip()
 ]
+
+# Canonical source identifiers to avoid string drift (keep only tavily + gemini)
+SOURCE_GEMINI_GROUNDING = "gemini_grounding"
+SOURCE_TAVILY = "tavily"
+
+_SOURCE_ALIASES = {
+    "gemini": SOURCE_GEMINI_GROUNDING,
+}
+
+
+def canonical_source(name: str) -> str:
+    """Normalize backend/source identifiers to canonical values."""
+    lowered = (name or "").lower()
+    return _SOURCE_ALIASES.get(lowered, lowered)
 
 class SearchBackend(ABC):
     """Abstract base class for search backends."""
@@ -120,151 +89,10 @@ class SearchBackend(ABC):
         return True  # Default: supports all topics
 
 
-class ArxivBackend(SearchBackend):
-    """ArXiv API backend for scientific literature."""
-
-    name = "arxiv"
-
-    def search(
-        self,
-        query: str,
-        max_results: int = 5,
-        run_id: Optional[str] = None,
-    ) -> List[SearchResult]:
-        logger = get_logger(__name__, run_id=run_id)
-        logger.debug(
-            "arxiv_search_start",
-            extra={"query": query, "max_results": max_results},
-        )
-        params = {
-            "search_query": f"all:{query}",
-            "start": 0,
-            "max_results": max_results,
-        }
-        try:
-            resp = requests.get(
-                "https://export.arxiv.org/api/query",
-                params=params,
-                timeout=10,
-            )
-            resp.raise_for_status()
-        except Exception as exc:
-            logger.warning("arxiv_search_failed", extra={"error": str(exc)})
-            return []
-
-        entries: List[SearchResult] = []
-        try:
-            root = ET.fromstring(resp.text)
-        except ET.ParseError as exc:
-            logger.warning("arxiv_parse_failed", extra={"error": str(exc)})
-            return []
-        ns = {"atom": "http://www.w3.org/2005/Atom"}
-        for entry in root.findall("atom:entry", ns):
-            title = entry.findtext("atom:title", default="", namespaces=ns).strip()
-            summary = entry.findtext("atom:summary", default="", namespaces=ns).strip()
-            link = entry.findtext("atom:id", default="", namespaces=ns).strip()
-            entries.append(
-                SearchResult(
-                    url=link,
-                    title=title,
-                    snippet=summary,
-                    source="arxiv",
-                    content=summary,
-                )
-            )
-        logger.info(
-            "arxiv_search_complete",
-            extra={"results": len(entries), "query": query},
-        )
-        return entries
-
-    def supports_topic(self, topic: str) -> bool:
-        return topic in {"science", "technology"}
-
-
-class OpenAlexBackend(SearchBackend):
-    """OpenAlex search backend for scholarly works."""
-
-    name = "openalex"
-
-    @staticmethod
-    def _abstract_from_index(index: Optional[Dict[str, List[int]]]) -> str:
-        if not index:
-            return ""
-        max_pos = max(
-            (pos for positions in index.values() for pos in positions), default=-1
-        )
-        if max_pos < 0:
-            return ""
-        tokens = ["" for _ in range(max_pos + 1)]
-        for word, positions in index.items():
-            for pos in positions:
-                if 0 <= pos < len(tokens):
-                    tokens[pos] = word
-        return " ".join(t for t in tokens if t).strip()
-
-    def search(
-        self,
-        query: str,
-        max_results: int = 5,
-        run_id: Optional[str] = None,
-    ) -> List[SearchResult]:
-        logger = get_logger(__name__, run_id=run_id)
-        logger.debug(
-            "openalex_search_start",
-            extra={"query": query, "max_results": max_results},
-        )
-        params = {
-            "search": query,
-            "per_page": max(1, max_results),
-            "sort": "relevance_score:desc",
-        }
-        try:
-            resp = requests.get(
-                "https://api.openalex.org/works",
-                params=params,
-                timeout=10,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-        except Exception as exc:
-            logger.warning("openalex_search_failed", extra={"error": str(exc)})
-            return []
-
-        results: List[SearchResult] = []
-        for item in data.get("results", [])[:max_results]:
-            title = item.get("display_name", "")
-            url = item.get("id", "")
-            snippet = self._abstract_from_index(item.get("abstract_inverted_index"))
-            if not snippet:
-                snippet = item.get("primary_topic", {}).get("display_name", "")
-            results.append(
-                SearchResult(
-                    url=url,
-                    title=title,
-                    snippet=snippet,
-                    source="openalex",
-                    content=snippet,
-                )
-            )
-        logger.info(
-            "openalex_search_complete",
-            extra={"results": len(results), "query": query},
-        )
-        return results
-
-    def supports_topic(self, topic: str) -> bool:
-        return topic in {"science", "technology"}
-
-
 class GeminiGroundingBackend(SearchBackend):
-    """Gemini with Google Search grounding for web-augmented search.
+    """Gemini with Google Search grounding for web-augmented search."""
 
-    This backend uses Gemini's native Google Search grounding to get fresh
-    web results. It is the primary search backend for Auto-Analyst.
-    """
-
-    name = "gemini_grounding"
+    name = SOURCE_GEMINI_GROUNDING
 
     def search(
         self,
@@ -306,7 +134,7 @@ class GeminiGroundingBackend(SearchBackend):
                     snippet=(
                         source.snippet or result.answer[:200] if result.answer else ""
                     ),
-                    source="gemini_grounding",
+                    source=SOURCE_GEMINI_GROUNDING,
                     # Store the grounded answer as content for direct use
                     content=result.answer if len(results) == 0 else "",
                 )
@@ -320,7 +148,7 @@ class GeminiGroundingBackend(SearchBackend):
                     url="",
                     title="Gemini Grounded Response",
                     snippet=result.answer[:300],
-                    source="gemini_grounding",
+                    source=SOURCE_GEMINI_GROUNDING,
                     content=result.answer,
                 )
             )
@@ -344,16 +172,16 @@ class GeminiGroundingBackend(SearchBackend):
 class TavilyBackend(SearchBackend):
     """Tavily search backend - reliable, RAG-optimized."""
 
-    name = "tavily"
+    name = SOURCE_TAVILY
 
     def search(
         self,
         query: str,
         max_results: int = 10,
+        run_id: Optional[str] = None,
         topic: str = "general",
         time_range: Optional[str] = None,
         include_domains: Optional[List[str]] = None,
-        run_id: Optional[str] = None,
     ) -> List[SearchResult]:
         logger = get_logger(__name__, run_id=run_id)
         api_key = TAVILY_API_KEY or os.getenv("TAVILY_API_KEY", "")
@@ -396,7 +224,7 @@ class TavilyBackend(SearchBackend):
                         url=item.get("url", ""),
                         title=item.get("title", ""),
                         snippet=item.get("content", "")[:500],
-                        source="tavily",
+                        source=SOURCE_TAVILY,
                         metadata={"score": item.get("score", 0)},
                     )
                 )
@@ -418,219 +246,6 @@ class TavilyBackend(SearchBackend):
                 extra={"error": str(exc)[:200], "query": query[:100]},
             )
             return []
-
-
-class DDGSBackend(SearchBackend):
-    """DuckDuckGo Search backend using the duckduckgo_search library.
-
-    Uses the duckduckgo_search library with fallback to HTML scraping
-    if the library fails.
-    """
-
-    name = "ddgs"
-
-    def search(
-        self,
-        query: str,
-        max_results: int = 5,
-        run_id: Optional[str] = None,
-    ) -> List[SearchResult]:
-        """Search using DuckDuckGo.
-
-        Args:
-            query: Search query string.
-            max_results: Maximum number of results.
-            run_id: Optional run ID for logging correlation.
-
-        Returns:
-            List of SearchResult from DuckDuckGo.
-        """
-        logger = get_logger(__name__, run_id=run_id)
-        logger.debug(
-            "ddgs_search_start",
-            extra={"query": query, "max_results": max_results},
-        )
-
-        # Try HTML.duckduckgo.com which works better for specific queries
-        results = self._search_html_duckduckgo(query, max_results, logger)
-        if results:
-            return results
-
-        # Fallback to the library
-        results = self._search_ddgs_library(query, max_results, logger)
-        if results:
-            return results
-
-        logger.warning("ddgs_search_all_methods_failed", extra={"query": query[:50]})
-        return []
-
-    def _search_html_duckduckgo(
-        self, query: str, max_results: int, logger
-    ) -> List[SearchResult]:
-        """Search using html.duckduckgo.com with POST."""
-        try:
-            from bs4 import BeautifulSoup
-            from urllib.parse import unquote
-
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.9",
-                "Content-Type": "application/x-www-form-urlencoded",
-            }
-
-            # Use POST to html.duckduckgo.com
-            url = "https://html.duckduckgo.com/html/"
-            data = {"q": query, "kl": "us-en", "kp": "-2"}  # kp=-2 disables safe search
-
-            resp = requests.post(url, data=data, headers=headers, timeout=15)
-
-            if resp.status_code != 200:
-                # DDG occasionally returns 202; retry with GET HTML endpoint
-                logger.debug("ddgs_html_bad_status", extra={"status": resp.status_code})
-                alt_url = "https://duckduckgo.com/html/"
-                resp = requests.get(
-                    alt_url, params={"q": query, "kl": "us-en", "kp": "-2"}, headers=headers, timeout=15
-                )
-                if resp.status_code != 200:
-                    # Final fallback to lite endpoint
-                    lite_url = "https://lite.duckduckgo.com/lite/"
-                    resp = requests.get(
-                        lite_url,
-                        params={"q": query},
-                        headers=headers,
-                        timeout=15,
-                    )
-                    if resp.status_code != 200:
-                        return []
-
-            soup = BeautifulSoup(resp.text, "html.parser")
-            results: List[SearchResult] = []
-
-            # Find result divs
-            for result_div in soup.find_all("div", class_="result"):
-                if len(results) >= max_results:
-                    break
-
-                # Get title and URL
-                title_link = result_div.find("a", class_="result__a")
-                if not title_link:
-                    continue
-
-                title = title_link.get_text(strip=True)
-                href = title_link.get("href", "")
-
-                # Extract actual URL from DuckDuckGo redirect
-                actual_url = href
-                if "uddg=" in href:
-                    try:
-                        actual_url = unquote(href.split("uddg=")[1].split("&")[0])
-                    except (IndexError, ValueError):
-                        pass
-
-                if not actual_url or not title:
-                    continue
-
-                # Skip blocked domains
-                if any(domain in actual_url for domain in BLOCKED_DOMAINS):
-                    continue
-
-                # Get snippet
-                snippet_elem = result_div.find("a", class_="result__snippet")
-                snippet = (
-                    snippet_elem.get_text(strip=True)[:300] if snippet_elem else ""
-                )
-
-                results.append(
-                    SearchResult(
-                        url=actual_url,
-                        title=title,
-                        snippet=snippet,
-                        source="ddgs",
-                    )
-                )
-
-            if results:
-                logger.info(
-                    "ddgs_search_complete",
-                    extra={
-                        "results": len(results),
-                        "query": query[:50],
-                        "method": "html",
-                    },
-                )
-            return results
-
-        except Exception as exc:
-            logger.debug("ddgs_html_failed", extra={"error": str(exc)[:100]})
-            return []
-
-    def _search_ddgs_library(
-        self, query: str, max_results: int, logger
-    ) -> List[SearchResult]:
-        """Search using the duckduckgo_search library."""
-        try:
-            # Prefer new ddgs package; fall back to legacy duckduckgo_search
-            try:
-                from ddgs import DDGS  # type: ignore
-
-                logger.debug("ddgs_library_using_pkg", extra={"package": "ddgs"})
-            except ImportError:
-                from duckduckgo_search import DDGS  # type: ignore
-
-                logger.debug(
-                    "ddgs_library_using_pkg", extra={"package": "duckduckgo_search"}
-                )
-
-            results: List[SearchResult] = []
-            with DDGS() as ddgs:
-                # Use wt-wt region for worldwide English results
-                search_results = list(
-                    ddgs.text(query, max_results=max_results * 2, region="wt-wt")
-                )
-
-            for r in search_results:
-                if len(results) >= max_results:
-                    break
-
-                url = r.get("href", "")
-                title = r.get("title", "")
-
-                # Skip blocked domains and Chinese results
-                if any(domain in url for domain in BLOCKED_DOMAINS):
-                    continue
-                if any(
-                    domain in url for domain in ["baidu.com", "zhihu.com", "zhidao"]
-                ):
-                    continue
-
-                results.append(
-                    SearchResult(
-                        url=url,
-                        title=title,
-                        snippet=r.get("body", "")[:300],
-                        source="ddgs",
-                    )
-                )
-
-            if results:
-                logger.info(
-                    "ddgs_search_complete",
-                    extra={
-                        "results": len(results),
-                        "query": query[:50],
-                        "method": "library",
-                    },
-                )
-            return results
-
-        except Exception as exc:
-            logger.debug("ddgs_library_failed", extra={"error": str(exc)[:100]})
-            return []
-
-    def supports_topic(self, topic: str) -> bool:
-        """DDGS supports all topics via metasearch."""
-        return True
 
 
 class WikipediaBackend(SearchBackend):
@@ -711,22 +326,13 @@ class WikipediaBackend(SearchBackend):
 
 # Registry of available search backends
 _BACKEND_REGISTRY: dict[str, type[SearchBackend]] = {
-    "gemini_grounding": GeminiGroundingBackend,
-    "tavily": TavilyBackend,
+    SOURCE_GEMINI_GROUNDING: GeminiGroundingBackend,
+    SOURCE_TAVILY: TavilyBackend,
     "wikipedia": WikipediaBackend,
-    "ddgs": DDGSBackend,
-    "duckduckgo": DDGSBackend,  # Alias for convenience
-    "arxiv": ArxivBackend,
-    "openalex": OpenAlexBackend,
 }
 
 
-def register_backend(name: str, backend_class: type[SearchBackend]) -> None:
-    """Register a custom search backend."""
-    _BACKEND_REGISTRY[name] = backend_class
-
-
-def get_backend(name: str, **kwargs) -> Optional[SearchBackend]:
+def get_backend(name: str) -> Optional[SearchBackend]:
     """Get a search backend instance by name."""
     normalized = name.strip().lower()
     if normalized == "tavily":
@@ -833,34 +439,6 @@ def _is_time_sensitive_query(query: str) -> bool:
     return any(term in q for term in temporal_terms)
 
 
-def _boost_preferred_domains(
-    results: List[SearchResult], preferred_domains: set
-) -> List[SearchResult]:
-    """Return results with preferred domains first, preserving relative order."""
-    if not preferred_domains:
-        return results
-    preferred: List[SearchResult] = []
-    rest: List[SearchResult] = []
-    for res in results:
-        if any(domain in (res.url or "") for domain in preferred_domains):
-            preferred.append(res)
-        else:
-            rest.append(res)
-    return preferred + rest
-
-
-def _preferred_domains_for_query(query: str) -> set:
-    """Return domains to prioritize for topic-aligned questions."""
-    topic = detect_query_topic(query)
-    preferred: set[str] = set()
-    if topic and topic in PREFERRED_DOMAINS_BY_TOPIC:
-        preferred.update(PREFERRED_DOMAINS_BY_TOPIC[topic])
-    # Always include sport-specific overrides
-    if topic == "sports":
-        preferred.update(PREFERRED_SPORTS_DOMAINS)
-    return preferred
-
-
 def filter_results(
     query: str, results: List[SearchResult], preferred_domains: Optional[set] = None
 ) -> List[SearchResult]:
@@ -890,10 +468,6 @@ def filter_results(
             logger.debug("filter_robots_blocked_domain", extra={"url": url})
             continue
 
-        preferred_hit = preferred_domains and any(
-            domain in url for domain in preferred_domains
-        )
-
         # Skip meta-content domains (grammar/language sites) unless query is about language
         language_terms = {
             "grammar",
@@ -917,12 +491,9 @@ def filter_results(
         # Check for keyword overlap between query and result
         overlap = query_keywords & result_keywords
 
-        # Include result if:
-        # 1. It's on a preferred domain for the query,
-        # 2. There's keyword overlap, OR
-        # 3. No keywords could be extracted from query, OR
-        # 4. The result is from gemini_grounding (already relevance-filtered)
-        if preferred_hit or overlap or not query_keywords or res.source == "gemini_grounding":
+        # Include result if there's keyword overlap, no query keywords, or the source
+        # is gemini grounding (already relevance-filtered).
+        if overlap or not query_keywords or res.source == SOURCE_GEMINI_GROUNDING:
             filtered.append(res)
         else:
             irrelevant_count += 1
@@ -952,7 +523,6 @@ def filter_results(
 def run_search_tasks(
     tasks: List[SearchQuery],
     max_results: int = 5,
-    searx_host: Optional[str] = None,
     run_id: Optional[str] = None,
 ) -> Tuple[List[SearchResult], List[str]]:
     """Run searches across configured free providers. Returns (results, warnings)."""
@@ -963,7 +533,6 @@ def run_search_tasks(
             "task_count": len(tasks),
             "max_results": max_results,
             "backends": SEARCH_BACKENDS,
-            "searx_host": searx_host,
         },
     )
     all_results: List[SearchResult] = []
@@ -976,7 +545,7 @@ def run_search_tasks(
     attempted_backends: set[str] = set()
 
     for name in backend_names:
-        backend = get_backend(name, host=searx_host)
+        backend = get_backend(name)
         if not backend:
             logger.warning("search_backend_unknown", extra={"backend": name})
             continue
@@ -984,8 +553,8 @@ def run_search_tasks(
         attempted_backends.add(backend.name)
 
     # Always include Gemini grounding for time-sensitive queries even if not configured explicitly
-    if time_sensitive and "gemini_grounding" not in attempted_backends:
-        gemini_backend = get_backend("gemini_grounding")
+    if time_sensitive and SOURCE_GEMINI_GROUNDING not in attempted_backends:
+        gemini_backend = get_backend(SOURCE_GEMINI_GROUNDING)
         if gemini_backend:
             backend_instances.append(gemini_backend)
             attempted_backends.add(gemini_backend.name)
@@ -1011,6 +580,8 @@ def run_search_tasks(
                     max_results=max_results,
                     run_id=run_id,
                 )
+                for res in results:
+                    res.source = canonical_source(res.source or backend.name)
                 logger.debug(
                     "search_backend_complete",
                     extra={
@@ -1030,14 +601,8 @@ def run_search_tasks(
 
     def finalize_results() -> List[SearchResult]:
         combined_query = " ".join([t.text for t in tasks])
-        preferred_domains = _preferred_domains_for_query(combined_query)
-        for task in tasks:
-            preferred_domains.update(task.preferred_domains or [])
         deduped = dedupe_results(all_results)
-        deduped = filter_results(
-            combined_query, deduped, preferred_domains=preferred_domains
-        )
-        deduped = _boost_preferred_domains(deduped, preferred_domains)
+        deduped = filter_results(combined_query, deduped, preferred_domains=None)
         return deduped
 
     run_backends(backend_instances)
@@ -1050,7 +615,7 @@ def run_search_tasks(
             if name and name not in attempted_backends
         ]
         for backend_name in fallback_chain:
-            backend = get_backend(backend_name, host=searx_host)
+            backend = get_backend(backend_name)
             if not backend:
                 logger.warning(
                     "search_backend_unknown",

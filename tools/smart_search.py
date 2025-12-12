@@ -128,7 +128,6 @@ def smart_search(
     query: str,
     max_results: int = 10,
     run_id: Optional[str] = None,
-    searx_host: Optional[str] = None,
 ) -> Tuple[List[SearchResult], List[str]]:
     """Autonomous search pipeline with LLM analysis and validation."""
     logger = get_logger(__name__, run_id=run_id)
@@ -214,7 +213,6 @@ def smart_search(
     results, search_warnings = run_search_tasks(
         search_tasks,
         max_results=max_results,
-        searx_host=searx_host,
         run_id=run_id,
     )
     warnings.extend(search_warnings)

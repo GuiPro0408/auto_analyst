@@ -78,13 +78,6 @@ def _build_search_query(text: str, rationale: str) -> SearchQuery:
     """Create a SearchQuery enriched with topic and preferred domains."""
     topic = detect_query_topic(text)
     preferred_domains: List[str] = []
-    if topic:
-        try:
-            from tools.search import PREFERRED_DOMAINS_BY_TOPIC
-
-            preferred_domains = list(PREFERRED_DOMAINS_BY_TOPIC.get(topic, []))
-        except Exception:
-            preferred_domains = []
     return SearchQuery(
         text=text,
         rationale=rationale,

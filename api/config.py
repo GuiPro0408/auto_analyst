@@ -30,28 +30,17 @@ HUGGINGFACE_INFERENCE_MODEL = os.getenv(
     "AUTO_ANALYST_HF_INFERENCE_MODEL", "mistralai/Mixtral-8x7B-Instruct-v0.1"
 )
 VECTOR_STORE_BACKEND = os.getenv("AUTO_ANALYST_VECTOR_STORE", "chroma")
-SEARCH_BACKENDS = os.getenv("AUTO_ANALYST_SEARCH_BACKENDS", "gemini_grounding").split(
-    ","
-)
+SEARCH_BACKENDS = os.getenv(
+    "AUTO_ANALYST_SEARCH_BACKENDS", "tavily,gemini_grounding"
+).split(",")
 SMART_SEARCH_ENABLED = os.getenv("AUTO_ANALYST_SMART_SEARCH", "true").lower() == "true"
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
 VALIDATE_RESULTS_ENABLED = os.getenv("AUTO_ANALYST_VALIDATE_RESULTS", "true").lower() == "true"
 
-# INT8 quantization is disabled by default because it's slow on Pascal GPUs (GTX 10xx).
-# Only enable on Ampere (RTX 30xx) or newer GPUs with native INT8 tensor cores.
-# Set AUTO_ANALYST_USE_INT8=true to enable if you have a newer GPU.
-USE_INT8_QUANTIZATION = os.getenv("AUTO_ANALYST_USE_INT8", "false").lower() == "true"
-
-# Minimum VRAM (in GB) recommended for the default LLM model
-# Qwen2.5-3B-Instruct FP16 needs ~6GB VRAM
-MIN_RECOMMENDED_VRAM_GB = 6
-MIN_RECOMMENDED_MEMORY_GB = 12
-
 LOG_LEVEL = os.getenv("AUTO_ANALYST_LOG_LEVEL", "DEBUG")
 LOG_FORMAT = os.getenv("AUTO_ANALYST_LOG_FORMAT", "plain")  # plain|json
 LOG_FILE_PATH = os.getenv("AUTO_ANALYST_LOG_FILE", "auto_analyst.log")
-SEARCH_RATE_LIMIT_SECONDS = float(os.getenv("AUTO_ANALYST_SEARCH_RATE_LIMIT", "1.0"))
-SEARCH_RETRIES = int(os.getenv("AUTO_ANALYST_SEARCH_RETRIES", "2"))
+LOG_REDACT_QUERIES = os.getenv("AUTO_ANALYST_LOG_REDACT_QUERIES", "false").lower() == "true"
 FETCH_RETRIES = int(os.getenv("AUTO_ANALYST_FETCH_RETRIES", "2"))
 FETCH_BACKOFF_SECONDS = float(os.getenv("AUTO_ANALYST_FETCH_BACKOFF", "1.0"))
 FETCH_CONCURRENCY = int(os.getenv("AUTO_ANALYST_FETCH_CONCURRENCY", "5"))

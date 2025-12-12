@@ -53,14 +53,14 @@ def is_allowed(url: str, run_id: Optional[str] = None) -> bool:
             _robots_cache[domain] = (allowed, now)
         return allowed
     except Exception as exc:
-        # If robots cannot be fetched, err on the side of fetching since sources are public.
-        logger.debug(
+        # Fail closed by default to avoid bypassing robots unintentionally.
+        logger.warning(
             "robots_check_failed",
-            extra={"url": url, "error": str(exc), "defaulting_to": True},
+            extra={"url": url, "error": str(exc), "defaulting_to": False},
         )
         with _robots_lock:
-            _robots_cache[domain] = (True, now)
-        return True
+            _robots_cache[domain] = (False, now)
+        return False
 
 
 # Backwards compatibility alias for explicit naming

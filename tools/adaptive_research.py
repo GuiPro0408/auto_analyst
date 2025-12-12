@@ -95,40 +95,14 @@ def refine_plan(
     """Produce additional search tasks based on the original query."""
     logger = get_logger(__name__, run_id=run_id)
     topic = detect_query_topic(query)
-    preferred_domains: List[str] = []
-    if topic:
-        try:
-            from tools.search import PREFERRED_DOMAINS_BY_TOPIC
-
-            preferred_domains = list(PREFERRED_DOMAINS_BY_TOPIC.get(topic, []))
-        except Exception:
-            preferred_domains = []
     logger.info(
         "refine_plan_start",
         extra={
             "query": query,
             "current_plan_tasks": len(current_plan),
             "topic": topic,
-            "preferred_domains": preferred_domains,
         },
     )
-    hint_domains = preferred_domains[:2]
-
-    if hint_domains:
-        new_tasks = [
-            SearchQuery(
-                text=f"{query} site:{domain}",
-                rationale="Adaptive domain-focused search",
-                topic=topic or "",
-                preferred_domains=preferred_domains,
-            )
-            for domain in hint_domains
-        ]
-        logger.info(
-            "refine_plan_complete",
-            extra={"new_tasks": len(new_tasks), "strategy": "topic_domains"},
-        )
-        return new_tasks
 
     if current_plan:
         new_tasks = heuristic_plan(f"{query} statistics trends impact", max_tasks=2)

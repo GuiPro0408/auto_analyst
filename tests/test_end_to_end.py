@@ -25,14 +25,14 @@ class FakeVectorStore(VectorStore):
 
 
 def test_end_to_end_pipeline(monkeypatch):
-    def fake_search(tasks, max_results=5, searx_host=None, run_id=None):
+    def fake_search(tasks, max_results=5, run_id=None):
         return (
             [
                 SearchResult(
                     url="http://example.com",
                     title="Example",
                     snippet="example snippet",
-                    source="duckduckgo",
+                    source="tavily",
                 )
             ],
             [],

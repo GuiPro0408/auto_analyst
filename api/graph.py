@@ -40,7 +40,7 @@ from tools.planner import plan_query
 from tools.quality_control import assess_answer, improve_answer
 from tools.retriever import build_vector_store, chunk_documents
 from tools.reranker import rerank_chunks
-from tools.search import run_search_tasks
+from tools.search import SOURCE_GEMINI_GROUNDING, run_search_tasks
 from tools.smart_search import smart_search
 from tools.chunker import TextChunker
 from tools.models import load_llm
@@ -51,14 +51,13 @@ def build_workflow(
     llm=None,
     vector_store: Optional[VectorStore] = None,
     embed_model: str = DEFAULT_EMBED_MODEL,
-    searx_host: Optional[str] = None,
     top_k: int = TOP_K_RESULTS,
     run_id: str | None = None,
 ):
     """Create a LangGraph app that runs the research pipeline."""
     chunker = TextChunker()
     llm = llm or load_llm()
-    store = vector_store or build_vector_store(model_name=embed_model)
+    store = vector_store or build_vector_store(model_name=embed_model, run_id=run_id)
 
     def plan_node(state: GraphState) -> GraphState:
         log = get_logger("api.graph.plan", run_id=state.get("run_id"))
@@ -82,7 +81,7 @@ def build_workflow(
         try:
             plan, time_sensitive = plan_query(
                 resolved_query,
-                llm=None,
+                llm=llm,
                 conversation_context=context_summary,
             )
             log.info(
@@ -122,13 +121,11 @@ def build_workflow(
                 query,
                 max_results=5,
                 run_id=state.get("run_id"),
-                searx_host=searx_host,
             )
         else:
             results, warnings = run_search_tasks(
                 plan,
                 max_results=5,
-                searx_host=searx_host,
                 run_id=state.get("run_id"),
             )
         log.info(
@@ -207,7 +204,12 @@ def build_workflow(
                 "duration_ms": (perf_counter() - start) * 1000,
             },
         )
-        return {"documents": documents, "warnings": warnings}
+        return {
+            "documents": documents,
+            "warnings": warnings,
+            "grounded_answer": state.get("grounded_answer", ""),
+            "grounded_sources": state.get("grounded_sources", []),
+        }
 
     def chunk_node(state: GraphState) -> GraphState:
         log = get_logger("api.graph.chunk", run_id=state.get("run_id"))
@@ -220,7 +222,7 @@ def build_workflow(
                 "total_content_chars": sum(len(d.content) for d in documents),
             },
         )
-        store.clear()
+        # Incrementally add new chunks instead of clearing to preserve prior context
         chunks = chunk_documents(documents, chunker, run_id=state.get("run_id"))
         store.upsert(chunks)
         log.info(
@@ -236,7 +238,12 @@ def build_workflow(
         warnings = state.get("warnings", [])
         if not chunks:
             warnings.append("No chunks available; downstream answers may be empty.")
-        return {"chunks": chunks, "warnings": warnings}
+        return {
+            "chunks": chunks,
+            "warnings": warnings,
+            "grounded_answer": state.get("grounded_answer", ""),
+            "grounded_sources": state.get("grounded_sources", []),
+        }
 
     def retrieve_node(state: GraphState) -> GraphState:
         log = get_logger("api.graph.retrieve", run_id=state.get("run_id"))
@@ -246,7 +253,13 @@ def build_workflow(
             log.warning("retrieve_no_chunks")
             warnings = state.get("warnings", [])
             warnings.append("No chunks to retrieve from; skipping retrieval.")
-            return {"retrieved": [], "retrieval_scores": [], "warnings": warnings}
+            return {
+                "retrieved": [],
+                "retrieval_scores": [],
+                "warnings": warnings,
+                "grounded_answer": state.get("grounded_answer", ""),
+                "grounded_sources": state.get("grounded_sources", []),
+            }
         query_text = state.get("query", "")
         log.info(
             "retrieve_start",
@@ -290,7 +303,13 @@ def build_workflow(
         warnings = state.get("warnings", [])
         if not retrieved:
             warnings.append("No retrieved context; answer may be unsupported.")
-        return {"retrieved": retrieved, "retrieval_scores": scores, "warnings": warnings}
+        return {
+            "retrieved": retrieved,
+            "retrieval_scores": scores,
+            "warnings": warnings,
+            "grounded_answer": state.get("grounded_answer", ""),
+            "grounded_sources": state.get("grounded_sources", []),
+        }
 
     def adaptive_node(state: GraphState) -> GraphState:
         log = get_logger("api.graph.adaptive", run_id=state.get("run_id"))
@@ -300,6 +319,23 @@ def build_workflow(
         retrieved = state.get("retrieved", [])
         retrieval_scores = state.get("retrieval_scores", [])
         query_text = state.get("query", "")
+
+        # If we already have a grounded answer, skip adaptive expansion
+        if state.get("grounded_answer") and state.get("grounded_sources"):
+            log.info(
+                "adaptive_skip_grounded",
+                extra={
+                    "adaptive_iterations": adaptive_iterations,
+                    "retrieved": len(retrieved),
+                },
+            )
+            return {
+                "warnings": warnings,
+                "adaptive_iterations": adaptive_iterations,
+                "grounded_answer": state.get("grounded_answer", ""),
+                "grounded_sources": state.get("grounded_sources", []),
+            }
+
         log.info(
             "adaptive_start",
             extra={
@@ -333,6 +369,8 @@ def build_workflow(
             return {
                 "warnings": warnings,
                 "adaptive_iterations": adaptive_iterations,
+                "grounded_answer": state.get("grounded_answer", ""),
+                "grounded_sources": state.get("grounded_sources", []),
             }
         log.info(
             "adaptive_triggered",
@@ -351,7 +389,6 @@ def build_workflow(
         results, search_warns = run_search_tasks(
             plan,
             max_results=5,
-            searx_host=searx_host,
             run_id=state.get("run_id"),
         )
         warnings.extend(search_warns)
@@ -390,6 +427,8 @@ def build_workflow(
             "retrieval_scores": retrieval_scores,
             "warnings": warnings,
             "adaptive_iterations": adaptive_iterations,
+            "grounded_answer": state.get("grounded_answer", ""),
+            "grounded_sources": state.get("grounded_sources", []),
         }
 
     def generate_node(state: GraphState) -> GraphState:
@@ -580,7 +619,6 @@ def run_research(
     llm=None,
     vector_store: Optional[VectorStore] = None,
     embed_model: str = DEFAULT_EMBED_MODEL,
-    searx_host: Optional[str] = None,
     top_k: int = TOP_K_RESULTS,
     conversation_history: Optional[List[ConversationTurn]] = None,
 ) -> ResearchState:
@@ -607,7 +645,15 @@ def run_research(
 
     if cached_payload:
         cached_state = decode_research_state(cached_payload)
-        if not cached_state.time_sensitive:
+        fallback_cached = (
+            cached_state.draft_answer.startswith("No sufficient context")
+            or cached_state.verified_answer.startswith("No context retrieved")
+        )
+        grounded_cached = any(
+            getattr(sr, "source", None) == SOURCE_GEMINI_GROUNDING
+            for sr in cached_state.search_results
+        )
+        if not cached_state.time_sensitive and not fallback_cached and not grounded_cached:
             logger.info(
                 "run_research_cache_hit",
                 extra={"query": query, "run_id": cached_state.run_id},
@@ -618,7 +664,7 @@ def run_research(
             ]
             return cached_state
         logger.info(
-            "run_research_cache_skip_time_sensitive",
+            "run_research_cache_skip_time_sensitive" if cached_state.time_sensitive else "run_research_cache_skip_low_context",
             extra={"query": query},
         )
 
@@ -630,7 +676,6 @@ def run_research(
             "top_k": top_k,
             "has_llm": llm is not None,
             "has_custom_store": vector_store is not None,
-            "searx_host": searx_host,
             "history_turns": len(history_window),
         },
     )
@@ -638,7 +683,6 @@ def run_research(
         llm=llm,
         vector_store=vector_store,
         embed_model=embed_model,
-        searx_host=searx_host,
         top_k=top_k,
         run_id=run_id,
     )
@@ -667,12 +711,50 @@ def run_research(
     }
     logger.debug("run_research_invoking_workflow")
     result = workflow.invoke(cast(GraphState, initial_state))
-    answer_text = result.get("verified_answer") or result.get("draft_answer", "")
+
+    # Ensure grounded answers are surfaced even if downstream nodes skipped them
+    grounded_answer = result.get("grounded_answer") or ""
+    grounded_sources = result.get("grounded_sources", []) or []
+    search_results = result.get("search_results", []) or []
+    if not grounded_answer:
+        for i, sr in enumerate(search_results):
+            if sr.source == SOURCE_GEMINI_GROUNDING and sr.content:
+                grounded_answer = sr.content
+                grounded_sources = [
+                    Chunk(
+                        id=f"grounding_{j}",
+                        text=source.snippet or source.title,
+                        metadata={
+                            "url": source.url,
+                            "title": source.title,
+                            "source": SOURCE_GEMINI_GROUNDING,
+                            "media_type": "text",
+                        },
+                    )
+                    for j, source in enumerate(search_results)
+                    if source.source == SOURCE_GEMINI_GROUNDING and source.url
+                ]
+                break
+
+    draft_answer = result.get("draft_answer", "")
+    citations = result.get("citations", [])
+    retrieved_override = result.get("retrieved", [])
+    if grounded_answer:
+        remapped, citations = build_citations(grounded_sources, grounded_answer)
+        draft_answer = remapped
+        if grounded_sources:
+            retrieved_override = grounded_sources
+
+    verified_answer = result.get("verified_answer", "")
+    if grounded_answer and not verified_answer.startswith("Verified answer"):
+        verified_answer = f"Verified answer: {draft_answer}"
+
+    answer_text = verified_answer or draft_answer
     updated_history = append_turn(
         history_window,
         query=query,
         answer=answer_text,
-        citations=result.get("citations", []),
+        citations=citations,
         max_turns=CONVERSATION_MEMORY_TURNS,
     )
     result["conversation_history"] = updated_history
@@ -702,10 +784,10 @@ def run_research(
         search_results=result.get("search_results", []),
         documents=result.get("documents", []),
         chunks=result.get("chunks", []),
-        retrieved=result.get("retrieved", []),
-        draft_answer=result.get("draft_answer", ""),
-        verified_answer=result.get("verified_answer", ""),
-        citations=result.get("citations", []),
+        retrieved=retrieved_override,
+        draft_answer=draft_answer,
+        verified_answer=verified_answer,
+        citations=citations,
         errors=result.get("errors", []),
         warnings=result.get("warnings", []),
         adaptive_iterations=result.get("adaptive_iterations", 0),

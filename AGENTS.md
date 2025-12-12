@@ -13,10 +13,10 @@ Auto-Analyst is an autonomous research assistant powered by a LangGraph RAG pipe
 - **LLM Backend:** Gemini 2.0 Flash (default), HuggingFace Inference API
 - **Embeddings:** sentence-transformers (`all-MiniLM-L6-v2`)
 - **Vector Store:** ChromaDB (default), FAISS (alternative)
-- **Search:** DuckDuckGo, Wikipedia API, SearxNG, Gemini Grounding
+- **Search:** Tavily, Gemini Grounding (Google Search), Wikipedia API
 - **UI:** Streamlit
 - **Testing:** pytest
-- **Parsing:** BeautifulSoup, pdfplumber, Playwright
+- **Parsing:** BeautifulSoup, pdfplumber
 
 ## Project Structure
 
@@ -56,7 +56,6 @@ tests/         # pytest test suite
 ```bash
 # Install dependencies
 pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
-playwright install chromium
 
 # Run the application
 streamlit run ui/app.py

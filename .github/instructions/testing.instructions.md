@@ -43,8 +43,8 @@ class FakeVectorStore(VectorStore):
 
 ```python
 def test_something(monkeypatch):
-    def fake_search(tasks, max_results=5, searx_host=None):
-        return [SearchResult(url="http://example.com", title="Test", snippet="...", source="duckduckgo")]
+    def fake_search(tasks, max_results=5, run_id=None):
+        return [SearchResult(url="http://example.com", title="Test", snippet="...", source="example")]
 
     def fake_fetch(result: SearchResult):
         return Document(url=result.url, title=result.title, content="test content", media_type="html")

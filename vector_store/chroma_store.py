@@ -19,16 +19,22 @@ class ChromaVectorStore(VectorStore):
         model_name: str,
         persist_path: Optional[Path] = None,
         collection_name: str = "auto-analyst",
+        run_id: Optional[str] = None,
     ) -> None:
-        logger = get_logger(__name__)
+        logger = get_logger(__name__, run_id=run_id)
         persist_path = persist_path or (DATA_DIR / "chromadb")
         persist_path.mkdir(parents=True, exist_ok=True)
+        self.collection_name = (
+            f"{collection_name}-{run_id}" if run_id else collection_name
+        )
+        self.run_id = run_id
         logger.info(
             "chroma_store_init",
             extra={
                 "persist_path": str(persist_path),
                 "model_name": model_name,
-                "collection_name": collection_name,
+                "collection_name": self.collection_name,
+                "run_id": run_id,
             },
         )
 
@@ -37,32 +43,29 @@ class ChromaVectorStore(VectorStore):
         self.embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
             model_name=model_name
         )
-        self.collection_name = collection_name
-        self._create_collection()
+        self.collection = self._get_or_create_collection()
         logger.debug("chroma_store_ready")
 
-    def _create_collection(self):
-        logger = get_logger(__name__)
-        try:
-            self.client.delete_collection(self.collection_name)
-            logger.debug(
-                "chroma_collection_deleted", extra={"collection": self.collection_name}
-            )
-        except Exception:
-            pass
-        self.collection = self.client.get_or_create_collection(
+    def _get_or_create_collection(self):
+        logger = get_logger(__name__, run_id=self.run_id)
+        collection = self.client.get_or_create_collection(
             name=self.collection_name,
             embedding_function=self.embedding_fn,
             metadata={"hnsw:space": "cosine"},
         )
         logger.debug(
-            "chroma_collection_created", extra={"collection": self.collection_name}
+            "chroma_collection_available", extra={"collection": self.collection_name}
         )
+        return collection
 
     def clear(self) -> None:
-        logger = get_logger(__name__)
-        logger.info("chroma_store_clear")
-        self._create_collection()
+        logger = get_logger(__name__, run_id=self.run_id)
+        logger.info("chroma_store_clear", extra={"collection": self.collection_name})
+        try:
+            self.client.delete_collection(self.collection_name)
+        except Exception:
+            logger.debug("chroma_clear_delete_failed", extra={"collection": self.collection_name})
+        self.collection = self._get_or_create_collection()
 
     def upsert(self, chunks: List[Chunk]) -> None:
         logger = get_logger(__name__)

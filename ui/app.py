@@ -107,7 +107,6 @@ if run and query.strip():
             llm=llm,
             vector_store=store,
             embed_model=embed_model,
-            searx_host=None,
             top_k=top_k,
             conversation_history=history_turns,
         )
