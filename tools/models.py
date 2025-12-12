@@ -356,6 +356,11 @@ class HuggingFaceInferenceLLM:
                     f"HuggingFace Inference API call failed after {self._retries} attempts: {exc}"
                 ) from exc
 
+        # This should be unreachable, but satisfies type checker
+        raise RuntimeError(
+            f"HuggingFace Inference API call failed after {self._retries} attempts: {last_error}"
+        )
+
 
 @lru_cache(maxsize=2)
 def load_llm(model_name: str = DEFAULT_LLM_MODEL, device_map: str = "auto"):

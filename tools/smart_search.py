@@ -167,7 +167,7 @@ def smart_search(
     from tools.search import TavilyBackend
 
     tavily = TavilyBackend()
-    tavily_results = tavily.search(
+    tavily_result_tuple = tavily.search(
         query=query,
         max_results=max_results,
         topic=tavily_topic,
@@ -175,6 +175,9 @@ def smart_search(
         include_domains=include_domains if include_domains else None,
         run_id=run_id,
     )
+    tavily_results = tavily_result_tuple[0]
+    tavily_warnings = tavily_result_tuple[1]
+    warnings.extend(tavily_warnings)
 
     if tavily_results:
         validated = validate_results_with_llm(query, tavily_results, run_id=run_id)
@@ -222,11 +225,13 @@ def smart_search(
             )
         )
 
-    results, search_warnings = run_search_tasks(
+    search_result_tuple = run_search_tasks(
         search_tasks,
         max_results=max_results,
         run_id=run_id,
     )
+    results = search_result_tuple[0]
+    search_warnings = search_result_tuple[1]
     warnings.extend(search_warnings)
 
     validated_results = validate_results_with_llm(query, results, run_id=run_id)
