@@ -69,7 +69,10 @@ def test_gemini_llm_missing_api_key_raises():
 
 
 def test_load_llm_uses_gemini_backend(monkeypatch):
+    from api.key_rotator import reset_default_rotator
+
     models.load_llm.cache_clear()
+    reset_default_rotator()  # Reset singleton before test
     monkeypatch.setattr(models, "LLM_BACKEND", "gemini")
     monkeypatch.setattr(models, "GEMINI_API_KEY", "secret")
 
@@ -96,6 +99,7 @@ def test_load_llm_uses_gemini_backend(monkeypatch):
         assert isinstance(llm, FakeGemini)
     finally:
         models.load_llm.cache_clear()
+        reset_default_rotator()  # Clean up after test
 
 
 def test_hf_inference_llm_requires_token():

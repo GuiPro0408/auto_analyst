@@ -143,6 +143,21 @@ def query_with_grounding(
             error="GOOGLE_API_KEY or GOOGLE_API_KEYS not configured",
         )
 
+    # Check if all keys are already exhausted from previous requests
+    if rotator.is_exhausted:
+        logger.warning(
+            "grounding_all_keys_exhausted",
+            extra={
+                "total_keys": rotator.total_keys,
+                "message": "All API keys rate-limited; skipping grounding",
+            },
+        )
+        return GroundingResult(
+            answer="",
+            success=False,
+            error="All Gemini API keys rate limited; skipping grounding.",
+        )
+
     try:
         from google import genai
         from google.genai import types
@@ -154,8 +169,15 @@ def query_with_grounding(
             error="google-genai package not installed. Run: pip install google-genai",
         )
 
-    # Get current API key from rotator
+    # Get current API key from rotator (may be None if exhausted)
     current_api_key = rotator.current_key
+    if current_api_key is None:
+        logger.warning("grounding_no_available_key")
+        return GroundingResult(
+            answer="",
+            success=False,
+            error="No available Gemini API key; all keys rate limited.",
+        )
     client = genai.Client(api_key=current_api_key)
 
     # Configure Google Search grounding tool (new API for Gemini 2.0+)
@@ -179,6 +201,19 @@ def query_with_grounding(
     while attempt < total_attempts:
         attempt += 1
         current_api_key = rotator.current_key
+
+        # Check if all keys exhausted mid-loop
+        if current_api_key is None:
+            logger.warning(
+                "grounding_keys_exhausted_mid_loop",
+                extra={"attempt": attempt, "total_attempts": total_attempts},
+            )
+            return GroundingResult(
+                answer="",
+                success=False,
+                error="All Gemini API keys rate limited; skipping grounding.",
+            )
+
         try:
             # Recreate client with current key (may have rotated)
             client = genai.Client(api_key=current_api_key)

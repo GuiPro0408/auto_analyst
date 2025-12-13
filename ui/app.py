@@ -21,6 +21,7 @@ from api.config import (
     TOP_K_RESULTS,
 )
 from api.graph import run_research
+from api.key_rotator import get_default_rotator, reset_default_rotator
 from api.memory import trim_history
 from api.state import ConversationTurn
 from tools.models import load_llm
@@ -57,6 +58,28 @@ with st.sidebar:
         value=DEFAULT_EMBED_MODEL,
         help="Sentence-transformers model id for embeddings.",
     )
+
+    st.markdown("---")
+    st.subheader("API Key Status")
+    rotator = get_default_rotator()
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("Available Keys", rotator.available_keys)
+    with col2:
+        st.metric("Total Keys", rotator.total_keys)
+
+    if rotator.is_exhausted:
+        st.warning("⚠️ All Gemini API keys are rate-limited. Using fallback search.")
+        if st.button("Reset Rate Limits"):
+            rotator.reset()
+            st.success("Rate limit tracking reset!")
+            st.rerun()
+    elif rotator.available_keys < rotator.total_keys:
+        st.info(f"ℹ️ {rotator.total_keys - rotator.available_keys} key(s) rate-limited")
+        if st.button("Reset Rate Limits"):
+            rotator.reset()
+            st.success("Rate limit tracking reset!")
+            st.rerun()
 
     st.markdown("---")
     st.caption(

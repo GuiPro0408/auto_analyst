@@ -153,6 +153,29 @@ class GeminiLLM:
             )
             return self._call_fallback(prompt)
 
+        # Check if all keys are exhausted before attempting
+        if self._key_rotator.is_exhausted:
+            if self._fallback_llm is not None:
+                self.logger.warning(
+                    "gemini_all_keys_exhausted_using_fallback",
+                    extra={"total_keys": self._key_rotator.total_keys},
+                )
+                self._using_fallback = True
+                return self._call_fallback(prompt)
+            else:
+                self.logger.error(
+                    "gemini_all_keys_exhausted_no_fallback",
+                    extra={"total_keys": self._key_rotator.total_keys},
+                )
+                return [
+                    {
+                        "generated_text": (
+                            "All Gemini API keys are rate limited and no fallback LLM is configured. "
+                            "Please wait a moment and retry."
+                        )
+                    }
+                ]
+
         attempts = 0
         max_attempts = self._key_rotator.total_keys
         last_error: Optional[Exception] = None
@@ -160,6 +183,18 @@ class GeminiLLM:
         while attempts < max_attempts:
             start = perf_counter()
             current_key = self._key_rotator.current_key
+
+            # Check for key exhaustion mid-loop
+            if current_key is None:
+                if self._fallback_llm is not None:
+                    self.logger.warning(
+                        "gemini_keys_exhausted_mid_loop_using_fallback",
+                        extra={"attempts": attempts},
+                    )
+                    self._using_fallback = True
+                    return self._call_fallback(prompt, last_error)
+                break
+
             try:
                 self._configure_model()  # Ensure we're using current key
                 response = self._model.generate_content(

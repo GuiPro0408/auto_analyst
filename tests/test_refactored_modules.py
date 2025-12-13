@@ -105,6 +105,43 @@ class TestAPIKeyRotator:
             rotator.mark_rate_limited(f"key{i}")
         assert rotator.available_keys == expected_available
 
+    def test_is_exhausted_false_initially(self):
+        """is_exhausted should be False when keys are available."""
+        rotator = APIKeyRotator(["key1", "key2"])
+        assert rotator.is_exhausted is False
+
+    def test_is_exhausted_true_when_all_rate_limited(self):
+        """is_exhausted should be True when all keys are rate-limited."""
+        rotator = APIKeyRotator(["key1", "key2"])
+        rotator.mark_rate_limited("key1")
+        assert rotator.is_exhausted is False
+        rotator.mark_rate_limited("key2")
+        assert rotator.is_exhausted is True
+
+    def test_is_exhausted_false_with_no_keys(self):
+        """is_exhausted should be False when no keys configured."""
+        rotator = APIKeyRotator([])
+        assert rotator.is_exhausted is False
+
+    def test_current_key_returns_none_when_exhausted(self):
+        """current_key should return None when all keys are rate-limited."""
+        rotator = APIKeyRotator(["key1", "key2"])
+        assert rotator.current_key == "key1"
+        rotator.mark_rate_limited("key1")
+        assert rotator.current_key == "key2"
+        rotator.mark_rate_limited("key2")
+        assert rotator.current_key is None
+
+    def test_reset_restores_exhausted_keys(self):
+        """reset() should restore exhausted keys."""
+        rotator = APIKeyRotator(["key1"])
+        rotator.mark_rate_limited("key1")
+        assert rotator.is_exhausted is True
+        assert rotator.current_key is None
+        rotator.reset()
+        assert rotator.is_exhausted is False
+        assert rotator.current_key == "key1"
+
 
 class TestCacheManager:
     """Tests for the cache manager."""

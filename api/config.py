@@ -72,6 +72,11 @@ TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
 VALIDATE_RESULTS_ENABLED = (
     os.getenv("AUTO_ANALYST_VALIDATE_RESULTS", "true").lower() == "true"
 )
+# When True, falls back to alternative search backends (e.g., Tavily) when
+# Gemini API keys are exhausted due to rate limits
+SEARCH_FALLBACK_ON_RATE_LIMIT = (
+    os.getenv("AUTO_ANALYST_SEARCH_FALLBACK", "true").lower() == "true"
+)
 
 # =============================================================================
 # LOGGING CONFIGURATION

@@ -32,7 +32,7 @@ class APIKeyRotator:
         """Get current API key, skipping rate-limited ones.
 
         Returns:
-            Current available API key, or None if no keys configured.
+            Current available API key, or None if no keys configured or all exhausted.
         """
         with self._lock:
             if not self._keys:
@@ -45,16 +45,15 @@ class APIKeyRotator:
                     return key
                 self._current_index = (self._current_index + 1) % len(self._keys)
 
-            # All keys rate limited, reset and return current
-            self._rate_limited_keys.clear()
-            self._logger.info(
-                "api_key_rotator_reset",
+            # All keys rate limited - return None to signal exhaustion
+            self._logger.warning(
+                "api_key_rotator_all_exhausted",
                 extra={
-                    "reason": "all_keys_rate_limited",
                     "total_keys": len(self._keys),
+                    "rate_limited_keys": len(self._rate_limited_keys),
                 },
             )
-            return self._keys[self._current_index]
+            return None
 
     def mark_rate_limited(self, key: str) -> bool:
         """Mark key as rate limited and rotate to next.
@@ -102,6 +101,12 @@ class APIKeyRotator:
         """Number of keys not currently rate-limited."""
         with self._lock:
             return len(self._keys) - len(self._rate_limited_keys)
+
+    @property
+    def is_exhausted(self) -> bool:
+        """Check if all API keys are currently rate-limited."""
+        with self._lock:
+            return len(self._keys) > 0 and len(self._rate_limited_keys) >= len(self._keys)
 
     def is_rate_limit_error(self, error: Exception) -> bool:
         """Check if an exception indicates a rate limit error.
