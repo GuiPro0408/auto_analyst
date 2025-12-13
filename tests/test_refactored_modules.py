@@ -1,9 +1,11 @@
 """Tests for refactored modules: key_rotator, cache_manager, state_builder."""
 
-import pytest
-from unittest.mock import MagicMock, patch
 import os
 import tempfile
+
+import pytest
+from unittest.mock import MagicMock, patch
+from pathlib import Path
 
 from api.key_rotator import APIKeyRotator, get_default_rotator, reset_default_rotator
 from api.cache_manager import CacheManager
@@ -19,6 +21,19 @@ from api.state import ConversationTurn, Chunk, SearchQuery, SearchResult
 class TestAPIKeyRotator:
     """Tests for the shared API key rotator."""
 
+    @pytest.mark.parametrize(
+        "keys,expected_key",
+        [
+            (["key1"], "key1"),
+            ([], None),
+            (None, None),
+        ],
+    )
+    def test_key_rotation_basic(self, keys, expected_key):
+        """Key rotator should return expected key for various inputs."""
+        rotator = APIKeyRotator(keys)
+        assert rotator.current_key == expected_key
+
     def test_single_key_rotation(self):
         """Single key should always return the same key."""
         rotator = APIKeyRotator(["key1"])
@@ -26,26 +41,24 @@ class TestAPIKeyRotator:
         assert rotator.current_key == "key1"
         assert rotator.current_key == "key1"
 
-    def test_empty_keys(self):
-        """Empty keys list should return None."""
-        rotator = APIKeyRotator([])
-        assert rotator.current_key is None
-
-    def test_none_keys(self):
-        """None keys should return None."""
-        rotator = APIKeyRotator(None)
-        assert rotator.current_key is None
-
     def test_rate_limited_key_skipped(self):
         """Rate-limited keys should be skipped."""
         rotator = APIKeyRotator(["key1", "key2", "key3"])
         rotator.mark_rate_limited("key1")
         assert rotator.current_key == "key2"
 
-    def test_total_keys(self):
+    @pytest.mark.parametrize(
+        "keys,expected_total",
+        [
+            (["key1", "key2", "key3"], 3),
+            (["key1"], 1),
+            ([], 0),
+        ],
+    )
+    def test_total_keys(self, keys, expected_total):
         """total_keys should return number of configured keys."""
-        rotator = APIKeyRotator(["key1", "key2", "key3"])
-        assert rotator.total_keys == 3
+        rotator = APIKeyRotator(keys)
+        assert rotator.total_keys == expected_total
 
     def test_available_keys(self):
         """available_keys should reflect non-rate-limited keys."""
@@ -75,14 +88,29 @@ class TestAPIKeyRotator:
         # Clean up
         reset_default_rotator()
 
+    @pytest.mark.parametrize(
+        "num_keys,num_rate_limited,expected_available",
+        [
+            (5, 0, 5),
+            (5, 2, 3),
+            (5, 5, 0),
+            (3, 1, 2),
+        ],
+    )
+    def test_rate_limit_counts(self, num_keys, num_rate_limited, expected_available):
+        """Rate limiting should correctly track available keys."""
+        keys = [f"key{i}" for i in range(num_keys)]
+        rotator = APIKeyRotator(keys)
+        for i in range(num_rate_limited):
+            rotator.mark_rate_limited(f"key{i}")
+        assert rotator.available_keys == expected_available
+
 
 class TestCacheManager:
     """Tests for the cache manager."""
 
     def test_cache_miss(self):
         """Cache miss should return None."""
-        from pathlib import Path
-
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = Path(f.name)
 
@@ -97,13 +125,16 @@ class TestCacheManager:
 class TestNormalizeConversationHistory:
     """Tests for conversation history normalization."""
 
-    def test_none_history(self):
-        """None history should return empty list."""
-        assert normalize_conversation_history(None) == []
-
-    def test_empty_history(self):
-        """Empty history should return empty list."""
-        assert normalize_conversation_history([]) == []
+    @pytest.mark.parametrize(
+        "history,expected_len",
+        [
+            (None, 0),
+            ([], 0),
+        ],
+    )
+    def test_empty_history(self, history, expected_len):
+        """Empty or None history should return empty list."""
+        assert len(normalize_conversation_history(history)) == expected_len
 
     def test_conversation_turn_objects(self):
         """ConversationTurn objects should pass through."""
@@ -145,22 +176,22 @@ class TestExtractGroundedAnswer:
         assert answer == "Grounded content"
         assert len(sources) == 1
 
-    def test_no_grounded_content(self):
+    @pytest.mark.parametrize(
+        "search_results",
+        [
+            [],
+            [
+                SearchResult(
+                    url="http://test.com",
+                    title="Test",
+                    snippet="snippet",
+                    source="tavily",
+                )
+            ],
+        ],
+    )
+    def test_no_grounded_content(self, search_results):
         """Should return empty if no grounded content."""
-        search_results = []
-        answer, sources = extract_grounded_answer(search_results)
-        assert answer == ""
-        assert sources == []
-
-    def test_non_grounding_results_ignored(self):
-        """Non-gemini_grounding results should not be extracted."""
-        sr = SearchResult(
-            url="http://test.com",
-            title="Test",
-            snippet="snippet",
-            source="tavily",
-        )
-        search_results = [sr]
         answer, sources = extract_grounded_answer(search_results)
         assert answer == ""
         assert sources == []

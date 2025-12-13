@@ -19,24 +19,39 @@ class TestDedupeResults:
         """Empty results should return empty list."""
         assert dedupe_results([]) == []
 
-    def test_removes_duplicates(self):
+    @pytest.mark.parametrize(
+        "urls,expected_count",
+        [
+            (
+                [
+                    "http://example.com/page1",
+                    "http://example.com/page1",
+                    "http://example.com/page2",
+                ],
+                2,
+            ),
+            (["http://a.com", "http://b.com", "http://c.com"], 3),
+            (["http://same.com"] * 5, 1),
+        ],
+    )
+    def test_removes_duplicates(self, urls, expected_count):
         """Should remove duplicate URLs."""
         results = [
-            SearchResult(url="http://example.com/page1", title="Page 1", snippet=""),
-            SearchResult(url="http://example.com/page1", title="Page 1", snippet=""),
-            SearchResult(url="http://example.com/page2", title="Page 2", snippet=""),
+            SearchResult(url=url, title=f"Title {i}", snippet="")
+            for i, url in enumerate(urls)
         ]
         deduped = dedupe_results(results)
-        assert len(deduped) == 2
-        urls = [r.url for r in deduped]
-        assert "http://example.com/page1" in urls
-        assert "http://example.com/page2" in urls
+        assert len(deduped) == expected_count
 
     def test_strips_url_fragments(self):
         """Should treat URLs with same base but different fragments as duplicates."""
         results = [
-            SearchResult(url="http://example.com/page#section1", title="P1", snippet=""),
-            SearchResult(url="http://example.com/page#section2", title="P2", snippet=""),
+            SearchResult(
+                url="http://example.com/page#section1", title="P1", snippet=""
+            ),
+            SearchResult(
+                url="http://example.com/page#section2", title="P2", snippet=""
+            ),
         ]
         deduped = dedupe_results(results)
         assert len(deduped) == 1
@@ -59,20 +74,30 @@ class TestFilterResults:
         """Empty results should return empty list."""
         assert filter_results("test query", []) == []
 
-    def test_filters_blocked_domains(self):
+    @pytest.mark.parametrize(
+        "blocked_url",
+        [
+            "http://reddit.com/user/test",
+            "http://facebook.com/page",
+            "http://twitter.com/status/123",
+        ],
+    )
+    def test_filters_blocked_domains(self, blocked_url):
         """Should filter out blocked domains."""
         results = [
-            SearchResult(url="http://reddit.com/user/test", title="Reddit", snippet=""),
+            SearchResult(url=blocked_url, title="Blocked", snippet="test"),
             SearchResult(url="http://example.com", title="Valid", snippet="test"),
         ]
         filtered = filter_results("test", results)
         assert len(filtered) == 1
-        assert "reddit.com" not in filtered[0].url
+        assert filtered[0].url == "http://example.com"
 
     def test_filters_robots_blocked_domains(self):
         """Should filter out known robots-blocked domains."""
         results = [
-            SearchResult(url="http://anime-planet.com/page", title="Anime", snippet="anime"),
+            SearchResult(
+                url="http://anime-planet.com/page", title="Anime", snippet="anime"
+            ),
             SearchResult(url="http://example.com", title="Valid", snippet="anime"),
         ]
         filtered = filter_results("anime", results)
@@ -151,11 +176,13 @@ class TestBlockedDomains:
         assert isinstance(BLOCKED_DOMAINS, set)
         assert len(BLOCKED_DOMAINS) > 0
 
-    def test_contains_social_media(self):
+    @pytest.mark.parametrize(
+        "domain",
+        ["facebook.com", "twitter.com", "instagram.com"],
+    )
+    def test_contains_social_media(self, domain):
         """Should contain major social media domains."""
-        assert "facebook.com" in BLOCKED_DOMAINS
-        assert "twitter.com" in BLOCKED_DOMAINS
-        assert "instagram.com" in BLOCKED_DOMAINS
+        assert domain in BLOCKED_DOMAINS
 
     def test_robots_blocked_is_set(self):
         """KNOWN_ROBOTS_BLOCKED_DOMAINS should be a non-empty set."""

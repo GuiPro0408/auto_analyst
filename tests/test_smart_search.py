@@ -1,5 +1,10 @@
-"""Tests for smart search module."""
+"""Tests for smart search module.
 
+Tests LLM-powered query analysis, result validation, and the
+end-to-end smart search pipeline.
+"""
+
+import pytest
 from unittest.mock import patch
 
 from api.state import SearchResult
@@ -8,10 +13,11 @@ from tools.smart_search import (
     smart_search,
     validate_results_with_llm,
 )
+from tests.conftest import ConfigurableLLM
 
 
-class FakeLLM:
-    """Fake LLM returning a predefined response."""
+class FakeSmartSearchLLM:
+    """Fake LLM for smart search tests with configurable response."""
 
     def __init__(self, response: str):
         self.response = response
@@ -20,7 +26,9 @@ class FakeLLM:
         return [{"generated_text": self.response}]
 
 
+@pytest.mark.unit
 def test_analyze_query_with_llm_valid_json():
+    """Query analysis should parse valid JSON responses."""
     fake_response = """```json
     {
         "intent": "news",
@@ -34,7 +42,9 @@ def test_analyze_query_with_llm_valid_json():
     }
     ```"""
 
-    with patch("tools.smart_search.load_llm", return_value=FakeLLM(fake_response)):
+    with patch(
+        "tools.smart_search.load_llm", return_value=FakeSmartSearchLLM(fake_response)
+    ):
         result = analyze_query_with_llm("latest openai news")
 
     assert result["topic"] == "technology"
@@ -42,22 +52,34 @@ def test_analyze_query_with_llm_valid_json():
     assert len(result["suggested_searches"]) > 0
 
 
+@pytest.mark.unit
 def test_analyze_query_with_llm_invalid_json():
-    with patch("tools.smart_search.load_llm", return_value=FakeLLM("invalid json")):
+    """Query analysis should fallback gracefully on invalid JSON."""
+    with patch(
+        "tools.smart_search.load_llm", return_value=FakeSmartSearchLLM("invalid json")
+    ):
         result = analyze_query_with_llm("test query")
 
     assert result["intent"] == "general"
     assert result["topic"] == "general"
 
 
+@pytest.mark.unit
 def test_validate_results_filters_irrelevant():
+    """Result validation should filter out irrelevant results."""
     results = [
-        SearchResult(url="https://techcrunch.com/openai", title="OpenAI News", snippet="..."),
-        SearchResult(url="https://random.de/accreditation", title="German Body", snippet="..."),
+        SearchResult(
+            url="https://techcrunch.com/openai", title="OpenAI News", snippet="..."
+        ),
+        SearchResult(
+            url="https://random.de/accreditation", title="German Body", snippet="..."
+        ),
         SearchResult(url="https://theverge.com/ai", title="AI Updates", snippet="..."),
     ]
 
-    with patch("tools.smart_search.load_llm", return_value=FakeLLM("[1, 3]")):
+    with patch(
+        "tools.smart_search.load_llm", return_value=FakeSmartSearchLLM("[1, 3]")
+    ):
         validated = validate_results_with_llm("openai news", results)
 
     assert len(validated) == 2
@@ -65,12 +87,14 @@ def test_validate_results_filters_irrelevant():
     assert validated[1].url == "https://theverge.com/ai"
 
 
+@pytest.mark.unit
 def test_smart_search_end_to_end():
+    """Smart search should integrate analysis, search, and validation."""
     analysis_response = (
         "{"
         '"intent": "news", "entities": ["test"], "topic": "technology", '
         '"time_sensitivity": "any", "suggested_searches": '
-        '[{"query": "test", "rationale": "test"}], "authoritative_sources": []'  # noqa: E501
+        '[{"query": "test", "rationale": "test"}], "authoritative_sources": []'
         "}"
     )
 
@@ -83,7 +107,10 @@ def test_smart_search_end_to_end():
         def search(self, **kwargs):
             return (fake_results, [])
 
-    with patch("tools.smart_search.load_llm", return_value=FakeLLM(analysis_response)):
+    with patch(
+        "tools.smart_search.load_llm",
+        return_value=FakeSmartSearchLLM(analysis_response),
+    ):
         # Patch TavilyBackend at the source (tools.search) since it's imported inside the function
         with patch("tools.search.TavilyBackend", MockTavilyBackend):
             with patch(
@@ -95,3 +122,51 @@ def test_smart_search_end_to_end():
     assert len(results) == 1
     assert results[0].url == "https://example.com"
     assert warnings == []
+
+
+@pytest.mark.unit
+def test_analyze_query_with_llm_extracts_entities():
+    """Query analysis should extract named entities."""
+    response = """{
+        "intent": "factual",
+        "entities": ["Python", "machine learning", "TensorFlow"],
+        "topic": "technology",
+        "time_sensitivity": "any",
+        "suggested_searches": [],
+        "authoritative_sources": []
+    }"""
+
+    with patch(
+        "tools.smart_search.load_llm", return_value=FakeSmartSearchLLM(response)
+    ):
+        result = analyze_query_with_llm(
+            "how to use TensorFlow for machine learning in Python"
+        )
+
+    assert "Python" in result["entities"]
+    assert "TensorFlow" in result["entities"]
+
+
+@pytest.mark.unit
+def test_validate_results_preserves_all_when_relevant():
+    """Validation should keep all results when all are relevant."""
+    results = [
+        SearchResult(url="https://site1.com", title="Relevant 1", snippet="..."),
+        SearchResult(url="https://site2.com", title="Relevant 2", snippet="..."),
+    ]
+
+    with patch(
+        "tools.smart_search.load_llm", return_value=FakeSmartSearchLLM("[1, 2]")
+    ):
+        validated = validate_results_with_llm("test query", results)
+
+    assert len(validated) == 2
+
+
+@pytest.mark.unit
+def test_validate_results_handles_empty_list():
+    """Validation should handle empty result list."""
+    with patch("tools.smart_search.load_llm", return_value=FakeSmartSearchLLM("[]")):
+        validated = validate_results_with_llm("test query", [])
+
+    assert validated == []

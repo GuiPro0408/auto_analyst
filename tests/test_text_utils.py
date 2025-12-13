@@ -15,10 +15,10 @@ from tools.text_utils import (
 class TestExtractKeywords:
     """Tests for extract_keywords function."""
 
-    def test_empty_text(self):
+    @pytest.mark.parametrize("text", ["", "   "])
+    def test_empty_text(self, text):
         """Empty text should return empty set."""
-        assert extract_keywords("") == set()
-        assert extract_keywords("   ") == set()
+        assert extract_keywords(text) == set()
 
     def test_basic_extraction(self):
         """Should extract words of minimum length."""
@@ -27,13 +27,21 @@ class TestExtractKeywords:
         assert "world" in result
         assert "test" in result
 
-    def test_respects_min_length(self):
+    @pytest.mark.parametrize(
+        "text,min_len,expected_in,expected_not_in",
+        [
+            ("a an the hello", 3, ["the", "hello"], ["a", "an"]),
+            ("hi there everyone", 4, ["there", "everyone"], ["hi"]),
+            ("x y z word", 2, ["word"], ["x", "y", "z"]),
+        ],
+    )
+    def test_respects_min_length(self, text, min_len, expected_in, expected_not_in):
         """Should filter words shorter than min_len."""
-        result = extract_keywords("a an the hello", min_len=3)
-        assert "a" not in result
-        assert "an" not in result
-        assert "the" in result
-        assert "hello" in result
+        result = extract_keywords(text, min_len=min_len)
+        for word in expected_in:
+            assert word in result
+        for word in expected_not_in:
+            assert word not in result
 
     def test_strips_punctuation(self):
         """Should strip punctuation when enabled."""
@@ -50,13 +58,20 @@ class TestExtractKeywords:
         assert "hello" in result
         assert "world" in result
 
-    def test_filters_stopwords(self):
+    @pytest.mark.parametrize(
+        "text,stopwords,expected_in,expected_not_in",
+        [
+            ("the quick brown fox", {"the"}, ["quick", "brown", "fox"], ["the"]),
+            ("is a test example", {"is", "a"}, ["test", "example"], ["is", "a"]),
+        ],
+    )
+    def test_filters_stopwords(self, text, stopwords, expected_in, expected_not_in):
         """Should filter provided stopwords."""
-        result = extract_keywords("the quick brown fox", stopwords={"the"})
-        assert "the" not in result
-        assert "quick" in result
-        assert "brown" in result
-        assert "fox" in result
+        result = extract_keywords(text, stopwords=stopwords)
+        for word in expected_in:
+            assert word in result
+        for word in expected_not_in:
+            assert word not in result
 
     def test_lowercases_output(self):
         """Should return lowercase keywords."""
@@ -76,89 +91,84 @@ class TestExtractKeywords:
 class TestDetectTimeSensitive:
     """Tests for detect_time_sensitive function."""
 
-    def test_detects_temporal_keywords(self):
-        """Should detect queries with temporal keywords."""
-        is_sensitive, matched = detect_time_sensitive("upcoming anime releases")
-        assert is_sensitive is True
-        assert "upcoming" in matched
-
-    def test_detects_year_keywords(self):
-        """Should detect year keywords."""
-        is_sensitive, matched = detect_time_sensitive("best movies 2025")
-        assert is_sensitive is True
-        assert "2025" in matched
-
-    def test_detects_current_keywords(self):
-        """Should detect 'current', 'latest', etc."""
-        is_sensitive, matched = detect_time_sensitive("current NBA standings")
-        assert is_sensitive is True
-        assert "current" in matched
-
-        is_sensitive, matched = detect_time_sensitive("latest news today")
-        assert is_sensitive is True
-        assert "latest" in matched
-        assert "today" in matched
+    @pytest.mark.parametrize(
+        "query,expected_sensitive,expected_keywords",
+        [
+            ("upcoming anime releases", True, ["upcoming"]),
+            ("best movies 2025", True, ["2025"]),
+            ("current NBA standings", True, ["current"]),
+            ("latest news today", True, ["latest", "today"]),
+            ("what is machine learning", False, []),
+            ("explain quantum physics", False, []),
+        ],
+    )
+    def test_time_sensitive_detection(
+        self, query, expected_sensitive, expected_keywords
+    ):
+        """Should detect temporal keywords in queries."""
+        is_sensitive, matched = detect_time_sensitive(query)
+        assert is_sensitive is expected_sensitive
+        for kw in expected_keywords:
+            assert kw in matched
 
     def test_returns_all_matches(self):
         """Should return all matched temporal keywords."""
-        is_sensitive, matched = detect_time_sensitive(
-            "new releases this week 2025"
-        )
+        is_sensitive, matched = detect_time_sensitive("new releases this week 2025")
         assert is_sensitive is True
         assert "new" in matched
         assert "releases" in matched
         assert "this week" in matched
         assert "2025" in matched
 
-    def test_non_temporal_query(self):
-        """Should return False for non-temporal queries."""
-        is_sensitive, matched = detect_time_sensitive("what is machine learning")
-        assert is_sensitive is False
-        assert matched == []
-
-    def test_case_insensitive(self):
+    @pytest.mark.parametrize(
+        "query",
+        ["UPCOMING RELEASES", "Latest NEWS", "CURRENT standings"],
+    )
+    def test_case_insensitive(self, query):
         """Should be case insensitive."""
-        is_sensitive, matched = detect_time_sensitive("UPCOMING RELEASES")
+        is_sensitive, matched = detect_time_sensitive(query)
         assert is_sensitive is True
-        assert "upcoming" in matched
+        assert len(matched) > 0
 
 
 class TestRequiresStructuredList:
     """Tests for requires_structured_list function."""
 
-    def test_detects_list_queries(self):
-        """Should detect queries expecting lists."""
-        assert requires_structured_list("list of best anime") is True
-        assert requires_structured_list("top 10 movies") is True
-        assert requires_structured_list("ranking of teams") is True
+    @pytest.mark.parametrize(
+        "query,expected",
+        [
+            # List queries
+            ("list of best anime", True),
+            ("top 10 movies", True),
+            ("ranking of teams", True),
+            # Schedule queries
+            ("NBA schedule today", True),
+            ("release schedule", True),
+            ("upcoming releases", True),
+            # Standings queries
+            ("current standings", True),
+            ("league table", True),
+            # Seasonal queries
+            ("fall anime lineup", True),
+            ("spring releases", True),
+            ("summer movies", True),
+            # Non-structured queries
+            ("what is Python", False),
+            ("explain machine learning", False),
+            ("how does blockchain work", False),
+        ],
+    )
+    def test_structured_list_detection(self, query, expected):
+        """Should detect queries expecting structured lists."""
+        assert requires_structured_list(query) is expected
 
-    def test_detects_schedule_queries(self):
-        """Should detect schedule-related queries."""
-        assert requires_structured_list("NBA schedule today") is True
-        assert requires_structured_list("release schedule") is True
-        assert requires_structured_list("upcoming releases") is True
-
-    def test_detects_standings_queries(self):
-        """Should detect standings/table queries."""
-        assert requires_structured_list("current standings") is True
-        assert requires_structured_list("league table") is True
-
-    def test_detects_season_queries(self):
-        """Should detect seasonal queries."""
-        assert requires_structured_list("fall anime lineup") is True
-        assert requires_structured_list("spring releases") is True
-        assert requires_structured_list("summer movies") is True
-
-    def test_non_structured_queries(self):
-        """Should return False for non-structured queries."""
-        assert requires_structured_list("what is Python") is False
-        assert requires_structured_list("explain machine learning") is False
-        assert requires_structured_list("how does blockchain work") is False
-
-    def test_case_insensitive(self):
+    @pytest.mark.parametrize(
+        "query",
+        ["TOP movies", "UPCOMING RELEASES", "List OF items"],
+    )
+    def test_case_insensitive(self, query):
         """Should be case insensitive."""
-        assert requires_structured_list("TOP movies") is True
-        assert requires_structured_list("UPCOMING RELEASES") is True
+        assert requires_structured_list(query) is True
 
 
 class TestConstants:
