@@ -2,6 +2,7 @@
 
 from typing import Dict, List, Optional
 
+from api.config import QC_MIN_RELEVANCE_THRESHOLD
 from api.logging_setup import get_logger
 from api.state import Chunk
 from tools.generator import generate_answer, verify_answer
@@ -73,16 +74,15 @@ def assess_answer(
     # Check 5: Retrieval scores should be above threshold (if available)
     if retrieval_scores and len(retrieval_scores) > 0:
         avg_score = sum(retrieval_scores) / len(retrieval_scores)
-        min_qc_threshold = 0.25
-        if avg_score < min_qc_threshold:
+        if avg_score < QC_MIN_RELEVANCE_THRESHOLD:
             issues.append(
-                f"Low retrieval relevance (avg: {avg_score:.3f} < {min_qc_threshold})"
+                f"Low retrieval relevance (avg: {avg_score:.3f} < {QC_MIN_RELEVANCE_THRESHOLD})"
             )
             logger.warning(
                 "assess_answer_low_retrieval_relevance",
                 extra={
                     "avg_score": round(avg_score, 4),
-                    "threshold": min_qc_threshold,
+                    "threshold": QC_MIN_RELEVANCE_THRESHOLD,
                 },
             )
 

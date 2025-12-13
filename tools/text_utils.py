@@ -26,7 +26,7 @@ def _load_stopwords() -> Set[str]:
                     extra={"path": str(data_path), "count": len(words)},
                 )
                 return words
-    except Exception as exc:
+    except (OSError, IOError, json.JSONDecodeError, TypeError) as exc:
         logger.warning(
             "stopwords_load_failed", extra={"error": str(exc), "path": str(data_path)}
         )

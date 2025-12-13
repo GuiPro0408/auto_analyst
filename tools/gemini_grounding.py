@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from api.config import GEMINI_API_KEYS, GEMINI_MODEL
+from api.config import GEMINI_API_KEYS, GEMINI_MODEL, GROUNDING_RETRY_DELAY
 from api.key_rotator import APIKeyRotator, get_default_rotator
 from api.logging_setup import get_logger
 
@@ -286,7 +286,7 @@ def query_with_grounding(
                         error="All Gemini API keys rate limited; skipping grounding.",
                     )
                 if attempt < total_attempts:
-                    time.sleep(0.5)
+                    time.sleep(GROUNDING_RETRY_DELAY)
                 continue
 
             # Check for transient errors using shared rotator method

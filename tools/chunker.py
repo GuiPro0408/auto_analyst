@@ -5,7 +5,7 @@ from typing import Any, Dict, List
 
 try:
     import tiktoken
-except Exception:  # pragma: no cover
+except (ImportError, ModuleNotFoundError):  # pragma: no cover
     tiktoken = None
 
 from api.config import CHUNK_OVERLAP, CHUNK_SIZE
@@ -18,7 +18,7 @@ def _get_encoding(model: str = "gpt2"):
         return None
     try:
         return tiktoken.get_encoding(model)
-    except Exception:
+    except (KeyError, ValueError):
         return tiktoken.get_encoding("gpt2")
 
 

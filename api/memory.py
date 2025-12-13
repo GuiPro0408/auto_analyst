@@ -5,7 +5,11 @@ from __future__ import annotations
 import re
 from typing import Dict, List, Sequence
 
-from api.config import CONVERSATION_MEMORY_TURNS, CONVERSATION_SUMMARY_CHARS
+from api.config import (
+    ANSWER_PREVIEW_MAX_LEN,
+    CONVERSATION_MEMORY_TURNS,
+    CONVERSATION_SUMMARY_CHARS,
+)
 from api.state import ConversationTurn
 
 # Pronouns that typically indicate follow-up references
@@ -50,8 +54,8 @@ def summarize_history(
     lines: List[str] = []
     for idx, turn in enumerate(turns, start=1):
         answer_preview = " ".join(turn.answer.strip().split())
-        if len(answer_preview) > 280:
-            answer_preview = answer_preview[:277] + "..."
+        if len(answer_preview) > ANSWER_PREVIEW_MAX_LEN:
+            answer_preview = answer_preview[: ANSWER_PREVIEW_MAX_LEN - 3] + "..."
         lines.append(f"Turn {idx}: Q: {turn.query.strip()}\nA: {answer_preview}")
 
     summary = "\n".join(lines).strip()

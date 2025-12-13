@@ -42,7 +42,7 @@ def rerank_chunks(
 
     try:
         reranker = model or load_reranker(model_name)
-    except Exception as exc:  # pragma: no cover - network/dependency issues
+    except (OSError, ImportError, RuntimeError, ValueError) as exc:  # pragma: no cover - network/dependency issues
         logger.warning("reranker_load_failed", extra={"error": str(exc)})
         return list(chunks), []
 

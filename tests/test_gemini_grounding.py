@@ -241,7 +241,7 @@ class TestGeminiGroundingBackend:
     def test_search_converts_sources_to_results(self, monkeypatch):
         """Should convert grounding sources to SearchResult objects."""
         monkeypatch.setattr(
-            "tools.search.query_with_grounding",
+            "tools.search_backends.query_with_grounding",
             lambda *args, **kwargs: GroundingResult(
                 answer="This is the grounded answer about anime.",
                 sources=[
@@ -270,7 +270,7 @@ class TestGeminiGroundingBackend:
     def test_search_creates_synthetic_result_when_no_sources(self, monkeypatch):
         """Should create synthetic result when answer exists but no sources."""
         monkeypatch.setattr(
-            "tools.search.query_with_grounding",
+            "tools.search_backends.query_with_grounding",
             lambda *args, **kwargs: GroundingResult(
                 answer="The answer is 42.",
                 sources=[],

@@ -87,6 +87,7 @@ def decode_research_state(payload: Dict[str, Any]) -> ResearchState:
         documents=[_as_document(item) for item in state_payload.get("documents", [])],
         chunks=[_as_chunk(item) for item in state_payload.get("chunks", [])],
         retrieved=[_as_chunk(item) for item in state_payload.get("retrieved", [])],
+        retrieval_scores=state_payload.get("retrieval_scores", []),
         draft_answer=state_payload.get("draft_answer", ""),
         verified_answer=state_payload.get("verified_answer", ""),
         citations=state_payload.get("citations", []),
@@ -99,6 +100,10 @@ def decode_research_state(payload: Dict[str, Any]) -> ResearchState:
         conversation_history=[
             _as_conversation_turn(item)
             for item in state_payload.get("conversation_history", [])
+        ],
+        grounded_answer=state_payload.get("grounded_answer", ""),
+        grounded_sources=[
+            _as_chunk(item) for item in state_payload.get("grounded_sources", [])
         ],
     )
 

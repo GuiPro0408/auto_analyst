@@ -32,7 +32,7 @@ def is_valid_url(url: str) -> bool:
     try:
         parsed = urlparse(url)
         return parsed.scheme in ("http", "https") and bool(parsed.netloc)
-    except Exception:
+    except (ValueError, AttributeError):
         return False
 
 
@@ -64,7 +64,7 @@ def is_allowed(url: str, run_id: Optional[str] = None) -> bool:
         with _robots_lock:
             _robots_cache[domain] = (allowed, now)
         return allowed
-    except Exception as exc:
+    except (OSError, IOError, ValueError, UnicodeDecodeError, RuntimeError) as exc:
         # Behavior on robots.txt fetch failure is configurable via ROBOTS_ON_ERROR
         default_allow = ROBOTS_ON_ERROR == "allow"
         logger.warning(
@@ -134,7 +134,7 @@ def fetch_url(
             resp = requests.get(result.url, headers=headers, timeout=timeout)
             resp.raise_for_status()
             break
-        except Exception as exc:
+        except (requests.RequestException, OSError) as exc:
             logger.warning(
                 "fetch_retry",
                 extra={"url": result.url, "attempt": attempt, "error": str(exc)},
@@ -175,7 +175,7 @@ def fetch_url(
                 "fetch_pdf_success", extra={"url": result.url, "chars": len(text)}
             )
             return doc, None
-        except Exception:
+        except (ValueError, OSError, IOError):
             logger.exception("parse_pdf_failed", extra={"url": result.url})
             return None, "Failed to parse PDF"
 

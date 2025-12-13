@@ -138,6 +138,10 @@ RERANK_MODEL_NAME = os.getenv(
 # =============================================================================
 CONVERSATION_MEMORY_TURNS = int(os.getenv("AUTO_ANALYST_MEMORY_TURNS", "5"))
 CONVERSATION_SUMMARY_CHARS = int(os.getenv("AUTO_ANALYST_MEMORY_SUMMARY_CHARS", "1200"))
+CONVERSATION_CONTEXT_MAX_CHARS = int(
+    os.getenv("AUTO_ANALYST_CONVERSATION_CONTEXT_MAX_CHARS", "800")
+)
+ANSWER_PREVIEW_MAX_LEN = int(os.getenv("AUTO_ANALYST_ANSWER_PREVIEW_MAX_LEN", "280"))
 
 # =============================================================================
 # ADAPTIVE RESEARCH CONFIGURATION
@@ -145,6 +149,30 @@ CONVERSATION_SUMMARY_CHARS = int(os.getenv("AUTO_ANALYST_MEMORY_SUMMARY_CHARS", 
 MIN_RELEVANCE_THRESHOLD = float(
     os.getenv("AUTO_ANALYST_MIN_RELEVANCE_THRESHOLD", "0.3")
 )
+
+# =============================================================================
+# QUALITY CONTROL CONFIGURATION
+# =============================================================================
+QC_MIN_RELEVANCE_THRESHOLD = float(
+    os.getenv("AUTO_ANALYST_QC_MIN_RELEVANCE_THRESHOLD", "0.25")
+)
+
+# =============================================================================
+# SEARCH CONFIGURATION (snippet lengths)
+# =============================================================================
+GROUNDING_SNIPPET_PREVIEW_LEN = int(
+    os.getenv("AUTO_ANALYST_GROUNDING_SNIPPET_PREVIEW_LEN", "200")
+)
+SYNTHETIC_SNIPPET_MAX_LEN = int(
+    os.getenv("AUTO_ANALYST_SYNTHETIC_SNIPPET_MAX_LEN", "300")
+)
+TAVILY_SNIPPET_MAX_LEN = int(os.getenv("AUTO_ANALYST_TAVILY_SNIPPET_MAX_LEN", "500"))
+
+# =============================================================================
+# LLM/GROUNDING RETRY CONFIGURATION
+# =============================================================================
+LLM_BACKOFF_SECONDS = float(os.getenv("AUTO_ANALYST_LLM_BACKOFF_SECONDS", "0.5"))
+GROUNDING_RETRY_DELAY = float(os.getenv("AUTO_ANALYST_GROUNDING_RETRY_DELAY", "0.5"))
 
 # =============================================================================
 # FETCH CONFIGURATION

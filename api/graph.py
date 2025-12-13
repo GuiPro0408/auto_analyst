@@ -31,6 +31,7 @@ from api.state import Chunk, ConversationTurn, Document, GraphState, ResearchSta
 from api.state_builder import (
     build_research_state,
     create_initial_state,
+    extract_grounded_answer,
     normalize_conversation_history,
 )
 from tools.adaptive_research import assess_context, refine_plan
@@ -45,6 +46,24 @@ from tools.smart_search import smart_search
 from tools.chunker import TextChunker
 from tools.models import load_llm
 from vector_store.base import VectorStore
+
+
+def preserve_grounded_state(state: GraphState) -> dict:
+    """Extract grounded answer and sources from state for passthrough.
+
+    Use this helper in pipeline nodes to preserve grounded state across
+    node boundaries without repeating the boilerplate.
+
+    Args:
+        state: Current pipeline state.
+
+    Returns:
+        Dict with grounded_answer and grounded_sources keys.
+    """
+    return {
+        "grounded_answer": state.get("grounded_answer", ""),
+        "grounded_sources": state.get("grounded_sources", []),
+    }
 
 
 def build_workflow(
@@ -114,60 +133,56 @@ def build_workflow(
                 "query": query,
             },
         )
-        if SMART_SEARCH_ENABLED and query:
-            log.info("search_using_smart_search", extra={"query": query})
-            results, warnings = smart_search(
-                query,
-                max_results=5,
-                run_id=state.get("run_id"),
+        try:
+            if SMART_SEARCH_ENABLED and query:
+                log.info("search_using_smart_search", extra={"query": query})
+                results, warnings = smart_search(
+                    query,
+                    max_results=5,
+                    run_id=state.get("run_id"),
+                )
+            else:
+                results, warnings = run_search_tasks(
+                    plan,
+                    max_results=5,
+                    run_id=state.get("run_id"),
+                )
+            log.info(
+                "search_complete",
+                extra={
+                    "results": len(results),
+                    "duration_ms": (perf_counter() - start) * 1000,
+                    "sources": list(set(r.source for r in results)),
+                    "urls": [r.url for r in results[:5]],
+                },
             )
-        else:
-            results, warnings = run_search_tasks(
-                plan,
-                max_results=5,
-                run_id=state.get("run_id"),
+            state_warnings = state.get("warnings", [])
+            state_warnings.extend(warnings)
+
+            # Extract grounded answer using centralized utility
+            grounded_answer, grounded_sources = extract_grounded_answer(
+                results, run_id=state.get("run_id")
             )
-        log.info(
-            "search_complete",
-            extra={
-                "results": len(results),
-                "duration_ms": (perf_counter() - start) * 1000,
-                "sources": list(set(r.source for r in results)),
-                "urls": [r.url for r in results[:5]],
-            },
-        )
-        state_warnings = state.get("warnings", [])
-        state_warnings.extend(warnings)
 
-        # Check if we got a grounded answer directly from Gemini
-        grounded_answer = ""
-        grounded_sources: List[Chunk] = []
-        for res in results:
-            if res.source == "gemini_grounding" and res.content:
-                grounded_answer = res.content
-                # Create chunks from all grounding results for citations
-                for idx, r in enumerate(results):
-                    if r.source == "gemini_grounding" and r.url:
-                        grounded_sources.append(
-                            Chunk(
-                                id=f"grounding_{idx}",
-                                text=r.snippet or r.title,
-                                metadata={
-                                    "url": r.url,
-                                    "title": r.title,
-                                    "source": "gemini_grounding",
-                                    "media_type": "text",
-                                },
-                            )
-                        )
-                break
-
-        return {
-            "search_results": results,
-            "warnings": state_warnings,
-            "grounded_answer": grounded_answer,
-            "grounded_sources": grounded_sources,
-        }
+            return {
+                "search_results": results,
+                "warnings": state_warnings,
+                "grounded_answer": grounded_answer,
+                "grounded_sources": grounded_sources,
+            }
+        except Exception as exc:  # pragma: no cover - defensive
+            log.exception("search_failed", extra={"error": str(exc)})
+            errors = state.get("errors", [])
+            errors.append(f"search_failed: {exc}")
+            warnings = state.get("warnings", [])
+            warnings.append("Search failed; proceeding with empty results.")
+            return {
+                "search_results": [],
+                "warnings": warnings,
+                "errors": errors,
+                "grounded_answer": "",
+                "grounded_sources": [],
+            }
 
     def fetch_node(state: GraphState) -> GraphState:
         log = get_logger("api.graph.fetch", run_id=state.get("run_id"))
@@ -180,48 +195,61 @@ def build_workflow(
                 "max_workers": FETCH_CONCURRENCY,
             },
         )
-        warnings = state.get("warnings", [])
-        documents: List[Document] = []
-        fetch_failed = 0
-        if search_results:
-            documents, fetch_warnings = fetch_documents_parallel(
-                search_results,
-                max_workers=FETCH_CONCURRENCY,
-                run_id=state.get("run_id"),
+        try:
+            warnings = state.get("warnings", [])
+            documents: List[Document] = []
+            fetch_failed = 0
+            if search_results:
+                documents, fetch_warnings = fetch_documents_parallel(
+                    search_results,
+                    max_workers=FETCH_CONCURRENCY,
+                    run_id=state.get("run_id"),
+                )
+                warnings.extend(fetch_warnings)
+                fetch_failed = len(search_results) - len(documents)
+            if not documents:
+                warnings.append("No documents fetched from search results.")
+
+            chunk_start = perf_counter()
+            chunks: List[Chunk] = []
+            if documents:
+                chunks = chunk_documents(documents, chunker, run_id=state.get("run_id"))
+                store.upsert(chunks)
+
+            log.info(
+                "fetch_chunk_complete",
+                extra={
+                    "documents": len(documents),
+                    "from_results": len(search_results),
+                    "success": len(documents),
+                    "failed": fetch_failed,
+                    "chunks": len(chunks),
+                    "chunk_duration_ms": (perf_counter() - chunk_start) * 1000,
+                    "duration_ms": (perf_counter() - start) * 1000,
+                },
             )
-            warnings.extend(fetch_warnings)
-            fetch_failed = len(search_results) - len(documents)
-        if not documents:
-            warnings.append("No documents fetched from search results.")
+            if not chunks:
+                warnings.append("No chunks available; downstream answers may be empty.")
 
-        chunk_start = perf_counter()
-        chunks: List[Chunk] = []
-        if documents:
-            chunks = chunk_documents(documents, chunker, run_id=state.get("run_id"))
-            store.upsert(chunks)
-
-        log.info(
-            "fetch_chunk_complete",
-            extra={
-                "documents": len(documents),
-                "from_results": len(search_results),
-                "success": len(documents),
-                "failed": fetch_failed,
-                "chunks": len(chunks),
-                "chunk_duration_ms": (perf_counter() - chunk_start) * 1000,
-                "duration_ms": (perf_counter() - start) * 1000,
-            },
-        )
-        if not chunks:
-            warnings.append("No chunks available; downstream answers may be empty.")
-
-        return {
-            "documents": documents,
-            "warnings": warnings,
-            "chunks": chunks,
-            "grounded_answer": state.get("grounded_answer", ""),
-            "grounded_sources": state.get("grounded_sources", []),
-        }
+            return {
+                "documents": documents,
+                "warnings": warnings,
+                "chunks": chunks,
+                **preserve_grounded_state(state),
+            }
+        except Exception as exc:  # pragma: no cover - defensive
+            log.exception("fetch_failed", extra={"error": str(exc)})
+            errors = state.get("errors", [])
+            errors.append(f"fetch_failed: {exc}")
+            warnings = state.get("warnings", [])
+            warnings.append("Fetch failed; proceeding with empty documents.")
+            return {
+                "documents": [],
+                "warnings": warnings,
+                "errors": errors,
+                "chunks": [],
+                **preserve_grounded_state(state),
+            }
 
     def retrieve_node(state: GraphState) -> GraphState:
         log = get_logger("api.graph.retrieve", run_id=state.get("run_id"))
@@ -235,59 +263,71 @@ def build_workflow(
                 "retrieved": [],
                 "retrieval_scores": [],
                 "warnings": warnings,
-                "grounded_answer": state.get("grounded_answer", ""),
-                "grounded_sources": state.get("grounded_sources", []),
+                **preserve_grounded_state(state),
             }
-        query_text = state.get("query", "")
-        log.info(
-            "retrieve_start",
-            extra={
-                "query": query_text,
-                "available_chunks": len(chunks),
-                "top_k": top_k,
-            },
-        )
-        scored = store.query(query_text, top_k=top_k)
-        retrieved = [sc.chunk for sc in scored]
-        scores = [sc.score for sc in scored]
-        if ENABLE_RERANKER and retrieved:
-            reranked, rerank_scores = rerank_chunks(
-                query_text,
-                retrieved,
-                top_k=top_k,
-                run_id=state.get("run_id"),
+        try:
+            query_text = state.get("query", "")
+            log.info(
+                "retrieve_start",
+                extra={
+                    "query": query_text,
+                    "available_chunks": len(chunks),
+                    "top_k": top_k,
+                },
             )
-            if reranked:
-                retrieved = reranked
-                scores = rerank_scores
-                log.debug(
-                    "retrieve_reranked",
-                    extra={
-                        "original": len(scored),
-                        "reranked": len(reranked),
-                        "top_score": scores[0] if scores else None,
-                    },
+            scored = store.query(query_text, top_k=top_k)
+            retrieved = [sc.chunk for sc in scored]
+            scores = [sc.score for sc in scored]
+            if ENABLE_RERANKER and retrieved:
+                reranked, rerank_scores = rerank_chunks(
+                    query_text,
+                    retrieved,
+                    top_k=top_k,
+                    run_id=state.get("run_id"),
                 )
-        log.info(
-            "retrieve_complete",
-            extra={
-                "retrieved": len(retrieved),
-                "top_k": top_k,
-                "scores": scores,
-                "avg_score": sum(scores) / len(scores) if scores else 0,
-                "duration_ms": (perf_counter() - start) * 1000,
-            },
-        )
-        warnings = state.get("warnings", [])
-        if not retrieved:
-            warnings.append("No retrieved context; answer may be unsupported.")
-        return {
-            "retrieved": retrieved,
-            "retrieval_scores": scores,
-            "warnings": warnings,
-            "grounded_answer": state.get("grounded_answer", ""),
-            "grounded_sources": state.get("grounded_sources", []),
-        }
+                if reranked:
+                    retrieved = reranked
+                    scores = rerank_scores
+                    log.debug(
+                        "retrieve_reranked",
+                        extra={
+                            "original": len(scored),
+                            "reranked": len(reranked),
+                            "top_score": scores[0] if scores else None,
+                        },
+                    )
+            log.info(
+                "retrieve_complete",
+                extra={
+                    "retrieved": len(retrieved),
+                    "top_k": top_k,
+                    "scores": scores,
+                    "avg_score": sum(scores) / len(scores) if scores else 0,
+                    "duration_ms": (perf_counter() - start) * 1000,
+                },
+            )
+            warnings = state.get("warnings", [])
+            if not retrieved:
+                warnings.append("No retrieved context; answer may be unsupported.")
+            return {
+                "retrieved": retrieved,
+                "retrieval_scores": scores,
+                "warnings": warnings,
+                **preserve_grounded_state(state),
+            }
+        except Exception as exc:  # pragma: no cover - defensive
+            log.exception("retrieve_failed", extra={"error": str(exc)})
+            errors = state.get("errors", [])
+            errors.append(f"retrieve_failed: {exc}")
+            warnings = state.get("warnings", [])
+            warnings.append("Retrieval failed; proceeding with empty context.")
+            return {
+                "retrieved": [],
+                "retrieval_scores": [],
+                "warnings": warnings,
+                "errors": errors,
+                **preserve_grounded_state(state),
+            }
 
     def adaptive_node(state: GraphState) -> GraphState:
         log = get_logger("api.graph.adaptive", run_id=state.get("run_id"))
@@ -310,8 +350,7 @@ def build_workflow(
             return {
                 "warnings": warnings,
                 "adaptive_iterations": adaptive_iterations,
-                "grounded_answer": state.get("grounded_answer", ""),
-                "grounded_sources": state.get("grounded_sources", []),
+                **preserve_grounded_state(state),
             }
 
         log.info(
@@ -347,8 +386,7 @@ def build_workflow(
             return {
                 "warnings": warnings,
                 "adaptive_iterations": adaptive_iterations,
-                "grounded_answer": state.get("grounded_answer", ""),
-                "grounded_sources": state.get("grounded_sources", []),
+                **preserve_grounded_state(state),
             }
         log.info(
             "adaptive_triggered",
@@ -409,8 +447,7 @@ def build_workflow(
             "retrieval_scores": retrieval_scores,
             "warnings": warnings,
             "adaptive_iterations": adaptive_iterations,
-            "grounded_answer": state.get("grounded_answer", ""),
-            "grounded_sources": state.get("grounded_sources", []),
+            **preserve_grounded_state(state),
         }
 
     def generate_node(state: GraphState) -> GraphState:
@@ -460,21 +497,31 @@ def build_workflow(
                 "citations": [],
                 "warnings": warnings,
             }
-        answer, citations = generate_answer(
-            llm,
-            query,
-            retrieved,
-            conversation_context=history_summary,
-        )
-        log.info(
-            "generate_complete",
-            extra={
-                "citations": len(citations),
-                "answer_length": len(answer),
-                "duration_ms": (perf_counter() - start) * 1000,
-            },
-        )
-        return {"draft_answer": answer, "citations": citations}
+        try:
+            answer, citations = generate_answer(
+                llm,
+                query,
+                retrieved,
+                conversation_context=history_summary,
+            )
+            log.info(
+                "generate_complete",
+                extra={
+                    "citations": len(citations),
+                    "answer_length": len(answer),
+                    "duration_ms": (perf_counter() - start) * 1000,
+                },
+            )
+            return {"draft_answer": answer, "citations": citations}
+        except Exception as exc:  # pragma: no cover - defensive
+            log.exception("generate_failed", extra={"error": str(exc)})
+            errors = state.get("errors", [])
+            errors.append(f"generate_failed: {exc}")
+            return {
+                "draft_answer": "Generation failed; unable to produce answer.",
+                "citations": [],
+                "errors": errors,
+            }
 
     def verify_node(state: GraphState) -> GraphState:
         log = get_logger("api.graph.verify", run_id=state.get("run_id"))
@@ -494,22 +541,29 @@ def build_workflow(
                 "history_context": bool(history_summary),
             },
         )
-        verified = verify_answer(
-            llm,
-            draft,
-            query,
-            retrieved,
-            conversation_context=history_summary,
-        )
-        log.info(
-            "verify_complete",
-            extra={
-                "verified_length": len(verified),
-                "changed": verified != draft,
-                "duration_ms": (perf_counter() - start) * 1000,
-            },
-        )
-        return {"verified_answer": verified}
+        try:
+            verified = verify_answer(
+                llm,
+                draft,
+                query,
+                retrieved,
+                conversation_context=history_summary,
+            )
+            log.info(
+                "verify_complete",
+                extra={
+                    "verified_length": len(verified),
+                    "changed": verified != draft,
+                    "duration_ms": (perf_counter() - start) * 1000,
+                },
+            )
+            return {"verified_answer": verified}
+        except Exception as exc:  # pragma: no cover - defensive
+            log.exception("verify_failed", extra={"error": str(exc)})
+            errors = state.get("errors", [])
+            errors.append(f"verify_failed: {exc}")
+            # Fall back to draft answer if verification fails
+            return {"verified_answer": draft, "errors": errors}
 
     def qc_node(state: GraphState) -> GraphState:
         log = get_logger("api.graph.qc", run_id=state.get("run_id"))
@@ -528,46 +582,54 @@ def build_workflow(
                 "retrieval_scores": retrieval_scores,
             },
         )
-        assessment = assess_answer(
-            query,
-            answer,
-            retrieved,
-            run_id=state.get("run_id"),
-            retrieval_scores=retrieval_scores,
-        )
-        notes = state.get("qc_notes", [])
-        notes.append(f"pass {qc_passes}: issues={assessment['issues']}")
-        if assessment["is_good_enough"] or qc_passes >= QC_MAX_PASSES:
+        try:
+            assessment = assess_answer(
+                query,
+                answer,
+                retrieved,
+                run_id=state.get("run_id"),
+                retrieval_scores=retrieval_scores,
+            )
+            notes = state.get("qc_notes", [])
+            notes.append(f"pass {qc_passes}: issues={assessment['issues']}")
+            if assessment["is_good_enough"] or qc_passes >= QC_MAX_PASSES:
+                log.info(
+                    "qc_complete",
+                    extra={
+                        "qc_passes": qc_passes,
+                        "status": "accepted",
+                        "issues": assessment["issues"],
+                        "duration_ms": (perf_counter() - start) * 1000,
+                    },
+                )
+                return {"qc_passes": qc_passes, "qc_notes": notes}
             log.info(
-                "qc_complete",
+                "qc_needs_improvement",
+                extra={"issues": assessment["issues"], "attempting_improvement": True},
+            )
+            improved = improve_answer(llm, query, answer, retrieved)
+            qc_passes += 1
+            log.info(
+                "qc_refine",
                 extra={
                     "qc_passes": qc_passes,
-                    "status": "accepted",
                     "issues": assessment["issues"],
+                    "improved_length": len(improved),
                     "duration_ms": (perf_counter() - start) * 1000,
                 },
             )
-            return {"qc_passes": qc_passes, "qc_notes": notes}
-        log.info(
-            "qc_needs_improvement",
-            extra={"issues": assessment["issues"], "attempting_improvement": True},
-        )
-        improved = improve_answer(llm, query, answer, retrieved)
-        qc_passes += 1
-        log.info(
-            "qc_refine",
-            extra={
+            return {
+                "verified_answer": improved,
                 "qc_passes": qc_passes,
-                "issues": assessment["issues"],
-                "improved_length": len(improved),
-                "duration_ms": (perf_counter() - start) * 1000,
-            },
-        )
-        return {
-            "verified_answer": improved,
-            "qc_passes": qc_passes,
-            "qc_notes": notes,
-        }
+                "qc_notes": notes,
+            }
+        except Exception as exc:  # pragma: no cover - defensive
+            log.exception("qc_failed", extra={"error": str(exc)})
+            errors = state.get("errors", [])
+            errors.append(f"qc_failed: {exc}")
+            notes = state.get("qc_notes", [])
+            notes.append(f"pass {qc_passes}: qc_failed")
+            return {"qc_passes": qc_passes, "qc_notes": notes, "errors": errors}
 
     graph = StateGraph(GraphState)
     graph.add_node("plan", lambda state: plan_node(cast(GraphState, state)))

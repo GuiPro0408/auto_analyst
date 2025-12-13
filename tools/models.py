@@ -16,6 +16,7 @@ from api.config import (
     HUGGINGFACE_API_TOKEN,
     HUGGINGFACE_INFERENCE_MODEL,
     LLM_BACKEND,
+    LLM_BACKOFF_SECONDS,
 )
 from api.key_rotator import APIKeyRotator, get_default_rotator
 from api.logging_setup import get_logger
@@ -272,7 +273,7 @@ class HuggingFaceInferenceLLM:
         generation_kwargs: Dict[str, Any],
         client: Optional[InferenceClient] = None,
         retries: int = 2,
-        backoff_seconds: float = 0.5,
+        backoff_seconds: float = LLM_BACKOFF_SECONDS,
     ) -> None:
         if not api_token:
             raise ValueError(
