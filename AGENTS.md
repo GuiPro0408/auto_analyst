@@ -8,7 +8,7 @@ Auto-Analyst is an autonomous research assistant powered by a LangGraph RAG pipe
 
 ## Tech Stack
 
-- **Language:** Python 3.10+
+- **Language:** Python 3.11+
 - **Orchestration:** LangGraph (stateful graph-based pipeline)
 - **LLM Backend:** Gemini 2.0 Flash (default), HuggingFace Inference API (fallback)
 - **Embeddings:** sentence-transformers (`all-MiniLM-L6-v2`)

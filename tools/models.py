@@ -364,8 +364,8 @@ class HuggingFaceInferenceLLM:
 
 
 @lru_cache(maxsize=2)
-def load_llm(model_name: str = DEFAULT_LLM_MODEL, device_map: str = "auto"):
-    """Load an instruct-tuned causal LM as a text-generation pipeline.
+def load_llm(model_name: str = DEFAULT_LLM_MODEL):
+    """Load an LLM via cloud API (Gemini or HuggingFace Inference).
 
     Cloud providers are used exclusively to avoid local GPU/CPU inference costs.
     """

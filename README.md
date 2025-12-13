@@ -7,7 +7,7 @@ An autonomous research assistant powered by a LangGraph RAG pipeline. Plans quer
 ```bash
 # Clone and setup
 git clone https://github.com/<your-username>/auto-analyst.git && cd auto-analyst
-python -m venv venv && source .venv/bin/activate
+python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
 
 # Run
@@ -148,7 +148,7 @@ streamlit run ui/app.py  # http://localhost:8501
 | `AUTO_ANALYST_EMBED`             | `all-MiniLM-L6-v2`                 | Embedding model               |
 | `AUTO_ANALYST_VECTOR_STORE`      | `chroma`                           | `chroma` or `faiss`           |
 | `AUTO_ANALYST_TOP_K`             | `6`                                | Retrieved chunks              |
-| `AUTO_ANALYST_LOG_LEVEL`         | `INFO`                             | `DEBUG`/`INFO`/`WARNING`      |
+| `AUTO_ANALYST_LOG_LEVEL`         | `DEBUG`                            | `DEBUG`/`INFO`/`WARNING`      |
 | `AUTO_ANALYST_LOG_FORMAT`        | `plain`                            | `plain` or `json`             |
 | `AUTO_ANALYST_SMART_SEARCH`      | `true`                             | Enable LLM-assisted query analysis and validation |
 | `AUTO_ANALYST_VALIDATE_RESULTS`  | `true`                             | Use LLM to filter irrelevant search hits |
@@ -184,10 +184,9 @@ Keep the `.env` file out of source control when filling in real credentials, and
 
 ```bash
 source .venv/bin/activate          # Activate virtualenv
-streamlit run ui/app.py                    # Run UI
-pytest                                      # Run tests
+streamlit run ui/app.py            # Run UI
+pytest                             # Run tests
 python evaluation/run_evaluation.py --dataset data/sample_eval.json  # Evaluate
-docker build -t auto-analyst . && docker run -p 8501:8501 auto-analyst  # Docker
 ```
 
 ## Project Structure

@@ -34,7 +34,11 @@ from tools.search_filters import (
 )
 
 # Re-export grounding utilities for backward compatibility
-from tools.gemini_grounding import query_with_grounding, GroundingResult, GroundingSource
+from tools.gemini_grounding import (
+    query_with_grounding,
+    GroundingResult,
+    GroundingSource,
+)
 
 # Fallback order when primary backends return no results
 FALLBACK_BACKEND_ORDER = ["tavily", "gemini_grounding"]
@@ -149,9 +153,7 @@ def run_search_tasks(
         )
 
     combined_query = " ".join([t.text for t in tasks])
-    deduped = filter_results(
-        combined_query, dedupe_results(all_results), preferred_domains=None
-    )
+    deduped = filter_results(combined_query, dedupe_results(all_results))
 
     if not deduped:
         fallback_chain = [
@@ -191,7 +193,6 @@ def run_search_tasks(
             deduped = filter_results(
                 combined_query,
                 dedupe_results(all_results),
-                preferred_domains=None,
             )
             if deduped:
                 logger.info(

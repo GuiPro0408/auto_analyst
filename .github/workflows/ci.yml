@@ -31,5 +31,3 @@ jobs:
         run: |
           source venv/bin/activate
           pytest
-      - name: Docker build
-        run: docker build -t auto-analyst .

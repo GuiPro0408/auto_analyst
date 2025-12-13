@@ -59,10 +59,13 @@ def dedupe_results(results: Iterable[SearchResult]) -> List[SearchResult]:
         List of unique SearchResult objects.
     """
     logger = get_logger(__name__)
+    # Convert to list upfront to avoid exhausting iterator during logging
+    results_list = list(results)
+    input_count = len(results_list)
     seen: Set[str] = set()
     unique: List[SearchResult] = []
     duplicates = 0
-    for res in results:
+    for res in results_list:
         key = res.url.split("#")[0]
         if not key or key in seen:
             duplicates += 1
@@ -72,7 +75,7 @@ def dedupe_results(results: Iterable[SearchResult]) -> List[SearchResult]:
     logger.debug(
         "dedupe_complete",
         extra={
-            "input": len(list(results)) if hasattr(results, "__len__") else "unknown",
+            "input": input_count,
             "unique": len(unique),
             "duplicates": duplicates,
         },
@@ -83,14 +86,12 @@ def dedupe_results(results: Iterable[SearchResult]) -> List[SearchResult]:
 def filter_results(
     query: str,
     results: List[SearchResult],
-    preferred_domains: Optional[Set[str]] = None,
 ) -> List[SearchResult]:
     """Drop obviously irrelevant or blocked domains; keep query-related results.
 
     Args:
         query: The search query for relevance checking.
         results: List of search results to filter.
-        preferred_domains: Optional set of preferred domains to prioritize.
 
     Returns:
         Filtered list of SearchResult objects.

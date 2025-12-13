@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, List, Optional
 
 from api.cache import (
     CACHE_SCHEMA_VERSION,
@@ -14,7 +15,32 @@ from api.cache import (
 from api.logging_setup import get_logger
 
 if TYPE_CHECKING:
-    from api.state import ResearchState
+    from api.state import ConversationTurn, ResearchState
+
+
+def _build_cache_key(
+    query: str, conversation_history: Optional[List["ConversationTurn"]] = None
+) -> str:
+    """Build a cache key that includes conversation context.
+
+    Args:
+        query: The search query.
+        conversation_history: Optional conversation history for context.
+
+    Returns:
+        A cache key string. If history is provided, includes a hash of the
+        conversation summary to differentiate identical queries in different contexts.
+    """
+    if not conversation_history:
+        return query
+
+    # Build a summary of the conversation for hashing
+    history_summary = "|".join(
+        f"{turn.query[:50]}:{turn.answer[:50]}"
+        for turn in conversation_history[-3:]  # Use last 3 turns for context
+    )
+    context_hash = hashlib.sha256(history_summary.encode()).hexdigest()[:12]
+    return f"{query}||ctx:{context_hash}"
 
 
 class CacheManager:
@@ -41,18 +67,21 @@ class CacheManager:
         self,
         query: str,
         skip_grounded: bool = True,
+        conversation_history: Optional[List["ConversationTurn"]] = None,
     ) -> Optional["ResearchState"]:
         """Attempt to retrieve a cached result for the query.
 
         Args:
             query: The search query to look up.
             skip_grounded: Whether to skip grounded cached results.
+            conversation_history: Optional conversation history for cache key context.
 
         Returns:
             Cached ResearchState if valid cache hit, None otherwise.
         """
+        cache_key = _build_cache_key(query, conversation_history)
         try:
-            cached_payload = self._cache.get(query)
+            cached_payload = self._cache.get(cache_key)
         except Exception as exc:
             self._logger.warning("cache_get_failed", extra={"error": str(exc)})
             return None
@@ -106,12 +135,18 @@ class CacheManager:
 
         return cached_state
 
-    def save_result(self, query: str, state: "ResearchState") -> None:
+    def save_result(
+        self,
+        query: str,
+        state: "ResearchState",
+        conversation_history: Optional[List["ConversationTurn"]] = None,
+    ) -> None:
         """Save a research result to cache.
 
         Args:
             query: The search query.
             state: The ResearchState to cache.
+            conversation_history: Optional conversation history for cache key context.
         """
         if state.time_sensitive:
             self._logger.debug(
@@ -127,14 +162,17 @@ class CacheManager:
             )
             return
 
+        cache_key = _build_cache_key(query, conversation_history)
         payload = {
             "version": CACHE_SCHEMA_VERSION,
             "state": encode_research_state(state),
         }
 
         try:
-            self._cache.set(query, payload)
-            self._logger.debug("cache_saved", extra={"query": query})
+            self._cache.set(cache_key, payload)
+            self._logger.debug(
+                "cache_saved", extra={"query": query, "cache_key": cache_key}
+            )
         except Exception as exc:
             self._logger.warning("cache_set_failed", extra={"error": str(exc)})
 

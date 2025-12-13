@@ -27,7 +27,6 @@ class SearchQuery:
     text: str
     rationale: str = ""
     topic: str = ""
-    preferred_domains: List[str] = field(default_factory=list)
 
 
 @dataclass

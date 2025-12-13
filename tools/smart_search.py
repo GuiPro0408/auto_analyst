@@ -211,7 +211,6 @@ def smart_search(
                 text=suggestion.get("query", query),
                 rationale=suggestion.get("rationale", "LLM suggested"),
                 topic=analysis.get("topic", "general"),
-                preferred_domains=include_domains or [],
             )
         )
 
@@ -221,7 +220,6 @@ def smart_search(
                 text=query,
                 rationale="Original query (no LLM suggestions)",
                 topic=analysis.get("topic", "general"),
-                preferred_domains=[],
             )
         )
 

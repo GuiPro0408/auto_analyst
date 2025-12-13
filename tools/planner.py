@@ -30,14 +30,12 @@ def _current_season(year: int, month: int) -> str:
 
 
 def _build_search_query(text: str, rationale: str) -> SearchQuery:
-    """Create a SearchQuery enriched with topic and preferred domains."""
+    """Create a SearchQuery enriched with topic."""
     topic = detect_query_topic(text)
-    preferred_domains: List[str] = []
     return SearchQuery(
         text=text,
         rationale=rationale,
         topic=topic or "",
-        preferred_domains=preferred_domains,
     )
 
 

@@ -6,6 +6,8 @@ Note: This module should be run from the project root directory using:
 The project root must be in PYTHONPATH for imports to work correctly.
 """
 
+from uuid import uuid4
+
 import streamlit as st
 
 from api.config import (
@@ -91,7 +93,8 @@ if run and query.strip():
         st.session_state.progress = "Loading models"
         progress_placeholder.info(st.session_state.progress)
         llm = load_llm(model_name=llm_model)
-        store = build_vector_store(model_name=embed_model)
+        run_id = str(uuid4())
+        store = build_vector_store(model_name=embed_model, run_id=run_id)
 
         history_turns = [
             ConversationTurn.from_dict(turn)

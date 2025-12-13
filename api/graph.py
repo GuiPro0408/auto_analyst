@@ -48,7 +48,7 @@ from tools.models import load_llm
 from vector_store.base import VectorStore
 
 
-def preserve_grounded_state(state: GraphState) -> dict:
+def preserve_grounded_state(state: GraphState) -> dict[str, Any]:
     """Extract grounded answer and sources from state for passthrough.
 
     Use this helper in pipeline nodes to preserve grounded state across
@@ -156,8 +156,8 @@ def build_workflow(
                     "urls": [r.url for r in results[:5]],
                 },
             )
-            state_warnings = state.get("warnings", [])
-            state_warnings.extend(warnings)
+            # Use immutable concatenation instead of extend
+            updated_warnings = state.get("warnings", []) + warnings
 
             # Extract grounded answer using centralized utility
             grounded_answer, grounded_sources = extract_grounded_answer(
@@ -166,20 +166,21 @@ def build_workflow(
 
             return {
                 "search_results": results,
-                "warnings": state_warnings,
+                "warnings": updated_warnings,
                 "grounded_answer": grounded_answer,
                 "grounded_sources": grounded_sources,
             }
         except Exception as exc:  # pragma: no cover - defensive
             log.exception("search_failed", extra={"error": str(exc)})
-            errors = state.get("errors", [])
-            errors.append(f"search_failed: {exc}")
-            warnings = state.get("warnings", [])
-            warnings.append("Search failed; proceeding with empty results.")
+            # Use immutable concatenation instead of append
+            updated_errors = state.get("errors", []) + [f"search_failed: {exc}"]
+            updated_warnings = state.get("warnings", []) + [
+                "Search failed; proceeding with empty results."
+            ]
             return {
                 "search_results": [],
-                "warnings": warnings,
-                "errors": errors,
+                "warnings": updated_warnings,
+                "errors": updated_errors,
                 "grounded_answer": "",
                 "grounded_sources": [],
             }
@@ -196,7 +197,8 @@ def build_workflow(
             },
         )
         try:
-            warnings = state.get("warnings", [])
+            base_warnings = state.get("warnings", [])
+            new_warnings: List[str] = []
             documents: List[Document] = []
             fetch_failed = 0
             if search_results:
@@ -205,10 +207,10 @@ def build_workflow(
                     max_workers=FETCH_CONCURRENCY,
                     run_id=state.get("run_id"),
                 )
-                warnings.extend(fetch_warnings)
+                new_warnings.extend(fetch_warnings)
                 fetch_failed = len(search_results) - len(documents)
             if not documents:
-                warnings.append("No documents fetched from search results.")
+                new_warnings.append("No documents fetched from search results.")
 
             chunk_start = perf_counter()
             chunks: List[Chunk] = []
@@ -229,27 +231,30 @@ def build_workflow(
                 },
             )
             if not chunks:
-                warnings.append("No chunks available; downstream answers may be empty.")
+                new_warnings.append(
+                    "No chunks available; downstream answers may be empty."
+                )
 
-            return {
+            return cast(GraphState, {
                 "documents": documents,
-                "warnings": warnings,
+                "warnings": base_warnings + new_warnings,
                 "chunks": chunks,
                 **preserve_grounded_state(state),
-            }
+            })
         except Exception as exc:  # pragma: no cover - defensive
             log.exception("fetch_failed", extra={"error": str(exc)})
-            errors = state.get("errors", [])
-            errors.append(f"fetch_failed: {exc}")
-            warnings = state.get("warnings", [])
-            warnings.append("Fetch failed; proceeding with empty documents.")
-            return {
+            # Use immutable concatenation
+            updated_errors = state.get("errors", []) + [f"fetch_failed: {exc}"]
+            updated_warnings = state.get("warnings", []) + [
+                "Fetch failed; proceeding with empty documents."
+            ]
+            return cast(GraphState, {
                 "documents": [],
-                "warnings": warnings,
-                "errors": errors,
+                "warnings": updated_warnings,
+                "errors": updated_errors,
                 "chunks": [],
                 **preserve_grounded_state(state),
-            }
+            })
 
     def retrieve_node(state: GraphState) -> GraphState:
         log = get_logger("api.graph.retrieve", run_id=state.get("run_id"))
@@ -257,14 +262,16 @@ def build_workflow(
         chunks = state.get("chunks")
         if not chunks:
             log.warning("retrieve_no_chunks")
-            warnings = state.get("warnings", [])
-            warnings.append("No chunks to retrieve from; skipping retrieval.")
-            return {
+            # Use immutable concatenation
+            updated_warnings = state.get("warnings", []) + [
+                "No chunks to retrieve from; skipping retrieval."
+            ]
+            return cast(GraphState, {
                 "retrieved": [],
                 "retrieval_scores": [],
-                "warnings": warnings,
+                "warnings": updated_warnings,
                 **preserve_grounded_state(state),
-            }
+            })
         try:
             query_text = state.get("query", "")
             log.info(
@@ -287,13 +294,17 @@ def build_workflow(
                 )
                 if reranked:
                     retrieved = reranked
-                    scores = rerank_scores
+                    # Only update scores if reranker actually produced scores
+                    # (None means reranking was skipped/failed - preserve original vector scores)
+                    if rerank_scores is not None:
+                        scores = rerank_scores
                     log.debug(
                         "retrieve_reranked",
                         extra={
                             "original": len(scored),
                             "reranked": len(reranked),
                             "top_score": scores[0] if scores else None,
+                            "used_rerank_scores": rerank_scores is not None,
                         },
                     )
             log.info(
@@ -306,33 +317,37 @@ def build_workflow(
                     "duration_ms": (perf_counter() - start) * 1000,
                 },
             )
-            warnings = state.get("warnings", [])
+            # Use immutable concatenation
+            updated_warnings = state.get("warnings", [])
             if not retrieved:
-                warnings.append("No retrieved context; answer may be unsupported.")
-            return {
+                updated_warnings = updated_warnings + [
+                    "No retrieved context; answer may be unsupported."
+                ]
+            return cast(GraphState, {
                 "retrieved": retrieved,
                 "retrieval_scores": scores,
-                "warnings": warnings,
+                "warnings": updated_warnings,
                 **preserve_grounded_state(state),
-            }
+            })
         except Exception as exc:  # pragma: no cover - defensive
             log.exception("retrieve_failed", extra={"error": str(exc)})
-            errors = state.get("errors", [])
-            errors.append(f"retrieve_failed: {exc}")
-            warnings = state.get("warnings", [])
-            warnings.append("Retrieval failed; proceeding with empty context.")
-            return {
+            # Use immutable concatenation
+            updated_errors = state.get("errors", []) + [f"retrieve_failed: {exc}"]
+            updated_warnings = state.get("warnings", []) + [
+                "Retrieval failed; proceeding with empty context."
+            ]
+            return cast(GraphState, {
                 "retrieved": [],
                 "retrieval_scores": [],
-                "warnings": warnings,
-                "errors": errors,
+                "warnings": updated_warnings,
+                "errors": updated_errors,
                 **preserve_grounded_state(state),
-            }
+            })
 
     def adaptive_node(state: GraphState) -> GraphState:
         log = get_logger("api.graph.adaptive", run_id=state.get("run_id"))
         start = perf_counter()
-        warnings = state.get("warnings", [])
+        base_warnings = state.get("warnings", [])
         adaptive_iterations = state.get("adaptive_iterations", 0)
         retrieved = state.get("retrieved", [])
         retrieval_scores = state.get("retrieval_scores", [])
@@ -347,11 +362,11 @@ def build_workflow(
                     "retrieved": len(retrieved),
                 },
             )
-            return {
-                "warnings": warnings,
+            return cast(GraphState, {
+                "warnings": base_warnings,
                 "adaptive_iterations": adaptive_iterations,
                 **preserve_grounded_state(state),
-            }
+            })
 
         log.info(
             "adaptive_start",
@@ -370,7 +385,8 @@ def build_workflow(
             query=query_text,
             scores=retrieval_scores,
         )
-        warnings.extend(assess_warnings)
+        # Use immutable concatenation
+        updated_warnings = base_warnings + assess_warnings
         if not needs_more or adaptive_iterations >= ADAPTIVE_MAX_ITERS:
             log.info(
                 "adaptive_skip",
@@ -383,11 +399,11 @@ def build_workflow(
                     "adaptive_iterations": adaptive_iterations,
                 },
             )
-            return {
-                "warnings": warnings,
+            return cast(GraphState, {
+                "warnings": updated_warnings,
                 "adaptive_iterations": adaptive_iterations,
                 **preserve_grounded_state(state),
-            }
+            })
         log.info(
             "adaptive_triggered",
             extra={
@@ -411,14 +427,15 @@ def build_workflow(
             max_results=5,
             run_id=state.get("run_id"),
         )
-        warnings.extend(search_warns)
+        # Use immutable concatenation - collect all new warnings
+        cycle_warnings = list(search_warns)
         documents = []
         for res in results:
             doc, warn = fetch_url(res, run_id=state.get("run_id"))
             if doc:
                 documents.append(doc)
             if warn:
-                warnings.append(f"{res.url}: {warn}")
+                cycle_warnings.append(f"{res.url}: {warn}")
         store.clear()
         chunks = chunk_documents(documents, chunker, run_id=state.get("run_id"))
         store.upsert(chunks)
@@ -438,17 +455,17 @@ def build_workflow(
                 "duration_ms": (perf_counter() - start) * 1000,
             },
         )
-        return {
+        return cast(GraphState, {
             "plan": plan,
             "search_results": results,
             "documents": documents,
             "chunks": chunks,
             "retrieved": retrieved,
             "retrieval_scores": retrieval_scores,
-            "warnings": warnings,
+            "warnings": updated_warnings + cycle_warnings,
             "adaptive_iterations": adaptive_iterations,
             **preserve_grounded_state(state),
-        }
+        })
 
     def generate_node(state: GraphState) -> GraphState:
         log = get_logger("api.graph.generate", run_id=state.get("run_id"))
@@ -560,10 +577,10 @@ def build_workflow(
             return {"verified_answer": verified}
         except Exception as exc:  # pragma: no cover - defensive
             log.exception("verify_failed", extra={"error": str(exc)})
-            errors = state.get("errors", [])
-            errors.append(f"verify_failed: {exc}")
+            # Use immutable concatenation
+            updated_errors = state.get("errors", []) + [f"verify_failed: {exc}"]
             # Fall back to draft answer if verification fails
-            return {"verified_answer": draft, "errors": errors}
+            return {"verified_answer": draft, "errors": updated_errors}
 
     def qc_node(state: GraphState) -> GraphState:
         log = get_logger("api.graph.qc", run_id=state.get("run_id"))
@@ -590,8 +607,10 @@ def build_workflow(
                 run_id=state.get("run_id"),
                 retrieval_scores=retrieval_scores,
             )
-            notes = state.get("qc_notes", [])
-            notes.append(f"pass {qc_passes}: issues={assessment['issues']}")
+            # Use immutable concatenation
+            updated_notes = state.get("qc_notes", []) + [
+                f"pass {qc_passes}: issues={assessment['issues']}"
+            ]
             if assessment["is_good_enough"] or qc_passes >= QC_MAX_PASSES:
                 log.info(
                     "qc_complete",
@@ -602,7 +621,7 @@ def build_workflow(
                         "duration_ms": (perf_counter() - start) * 1000,
                     },
                 )
-                return {"qc_passes": qc_passes, "qc_notes": notes}
+                return {"qc_passes": qc_passes, "qc_notes": updated_notes}
             log.info(
                 "qc_needs_improvement",
                 extra={"issues": assessment["issues"], "attempting_improvement": True},
@@ -621,15 +640,18 @@ def build_workflow(
             return {
                 "verified_answer": improved,
                 "qc_passes": qc_passes,
-                "qc_notes": notes,
+                "qc_notes": updated_notes,
             }
         except Exception as exc:  # pragma: no cover - defensive
             log.exception("qc_failed", extra={"error": str(exc)})
-            errors = state.get("errors", [])
-            errors.append(f"qc_failed: {exc}")
-            notes = state.get("qc_notes", [])
-            notes.append(f"pass {qc_passes}: qc_failed")
-            return {"qc_passes": qc_passes, "qc_notes": notes, "errors": errors}
+            # Use immutable concatenation
+            updated_errors = state.get("errors", []) + [f"qc_failed: {exc}"]
+            updated_notes = state.get("qc_notes", []) + [f"pass {qc_passes}: qc_failed"]
+            return {
+                "qc_passes": qc_passes,
+                "qc_notes": updated_notes,
+                "errors": updated_errors,
+            }
 
     graph = StateGraph(GraphState)
     graph.add_node("plan", lambda state: plan_node(cast(GraphState, state)))
@@ -700,9 +722,11 @@ def run_research(
         normalized_history, max_turns=CONVERSATION_MEMORY_TURNS
     )
 
-    # Check cache
+    # Check cache (include conversation history in cache key)
     cache_manager = CacheManager(CACHE_DB_PATH, CACHE_TTL_SECONDS, run_id=run_id)
-    cached_result = cache_manager.get_cached_result(query)
+    cached_result = cache_manager.get_cached_result(
+        query, conversation_history=history_window
+    )
     if cached_result:
         return cached_result
 
@@ -769,6 +793,8 @@ def run_research(
         },
     )
 
-    # Cache result if appropriate
-    cache_manager.save_result(query, research_state)
+    # Cache result if appropriate (include conversation history in cache key)
+    cache_manager.save_result(
+        query, research_state, conversation_history=history_window
+    )
     return research_state

@@ -18,7 +18,8 @@ RERANKER_DEVICE = os.getenv("AUTO_ANALYST_RERANKER_DEVICE", "cpu")
 def load_reranker(model_name: str = RERANK_MODEL_NAME) -> CrossEncoder:
     logger = get_logger(__name__)
     logger.info(
-        "reranker_load_start", extra={"model_name": model_name, "device": RERANKER_DEVICE}
+        "reranker_load_start",
+        extra={"model_name": model_name, "device": RERANKER_DEVICE},
     )
     model = CrossEncoder(model_name, device=RERANKER_DEVICE)
     logger.info("reranker_load_complete", extra={"model_name": model_name})
@@ -32,19 +33,31 @@ def rerank_chunks(
     model_name: str = RERANK_MODEL_NAME,
     model: Optional[CrossEncoder] = None,
     run_id: Optional[str] = None,
-) -> Tuple[List[Chunk], List[float]]:
-    """Rerank retrieved chunks using a cross-encoder model."""
+) -> Tuple[List[Chunk], Optional[List[float]]]:
+    """Rerank retrieved chunks using a cross-encoder model.
+
+    Returns:
+        Tuple of (reranked_chunks, scores). Scores is None if reranking was
+        skipped or failed, allowing caller to preserve original vector scores.
+    """
 
     logger = get_logger(__name__, run_id=run_id)
 
     if not ENABLE_RERANKER or not chunks:
-        return list(chunks), []
+        # Return None for scores to signal "no reranking performed"
+        return list(chunks), None
 
     try:
         reranker = model or load_reranker(model_name)
-    except (OSError, ImportError, RuntimeError, ValueError) as exc:  # pragma: no cover - network/dependency issues
+    except (
+        OSError,
+        ImportError,
+        RuntimeError,
+        ValueError,
+    ) as exc:  # pragma: no cover - network/dependency issues
         logger.warning("reranker_load_failed", extra={"error": str(exc)})
-        return list(chunks), []
+        # Return None for scores to preserve original vector scores
+        return list(chunks), None
 
     pairs = [(query, chunk.text or "") for chunk in chunks]
     logger.debug(

@@ -61,7 +61,6 @@ def _as_search_query(data: Dict[str, Any]) -> SearchQuery:
         text=data.get("text", ""),
         rationale=data.get("rationale", ""),
         topic=data.get("topic", ""),
-        preferred_domains=data.get("preferred_domains", []),
     )
 
 
