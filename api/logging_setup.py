@@ -69,6 +69,67 @@ def _configure_root() -> None:
     logging.basicConfig(level=level, handlers=handlers)
 
 
+def configure_logging(
+    level: str | None = None,
+    log_format: str | None = None,
+    log_file: str | None = None,
+    redact_queries: bool | None = None,
+) -> None:
+    """Explicitly configure logging settings.
+
+    This function allows programmatic control over logging configuration,
+    overriding environment variable settings when provided.
+
+    Args:
+        level: Log level (DEBUG, INFO, WARNING, ERROR). Defaults to config.LOG_LEVEL.
+        log_format: Output format ('plain' or 'json'). Defaults to config.LOG_FORMAT.
+        log_file: Path to log file. Defaults to config.LOG_FILE_PATH.
+        redact_queries: Whether to redact sensitive fields. Defaults to config.LOG_REDACT_QUERIES.
+    """
+    # Clear existing handlers to allow reconfiguration
+    root = logging.getLogger()
+    for handler in root.handlers[:]:
+        root.removeHandler(handler)
+
+    # Apply overrides or use config defaults
+    effective_level = getattr(
+        logging, (level or config.LOG_LEVEL).upper(), logging.INFO
+    )
+    effective_format = (log_format or config.LOG_FORMAT).lower()
+    effective_file = log_file if log_file is not None else config.LOG_FILE_PATH
+    effective_redact = (
+        redact_queries if redact_queries is not None else config.LOG_REDACT_QUERIES
+    )
+
+    fmt = "%(asctime)s %(levelname)s [%(name)s] [run=%(run_id)s] %(message)s"
+    formatter = (
+        _JsonFormatter() if effective_format == "json" else _DefaultFormatter(fmt=fmt)
+    )
+
+    class _RedactFilter(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:  # pragma: no cover
+            if effective_redact:
+                for field in ("query", "task_queries", "urls"):
+                    if hasattr(record, field):
+                        setattr(record, field, "[REDACTED]")
+            return True
+
+    redact_filter = _RedactFilter()
+
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(formatter)
+    handler.addFilter(redact_filter)
+    handlers = [handler]
+
+    if effective_file:
+        file_handler = logging.FileHandler(effective_file)
+        file_handler.setFormatter(formatter)
+        file_handler.addFilter(redact_filter)
+        handlers.append(file_handler)
+
+    logging.basicConfig(level=effective_level, handlers=handlers, force=True)
+
+
 def get_logger(name: str, run_id: str | None = None) -> Logger | LoggerAdapter:
     """Return a logger configured with optional run correlation id."""
     _configure_root()
