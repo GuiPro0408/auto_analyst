@@ -2,9 +2,13 @@
 
 Note: This module should be run from the project root directory using:
     streamlit run ui/app.py
-
-The project root must be in PYTHONPATH for imports to work correctly.
 """
+
+import sys
+from pathlib import Path
+
+# Add project root to path for imports
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from uuid import uuid4
 
