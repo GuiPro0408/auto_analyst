@@ -25,6 +25,7 @@ from api.key_rotator import get_default_rotator, reset_default_rotator
 from api.memory import trim_history
 from api.state import ConversationTurn
 from tools.models import load_llm
+from tools.query_classifier import get_query_type_description
 from tools.retriever import build_vector_store
 
 
@@ -159,6 +160,17 @@ if run and query.strip():
 
 if st.session_state.last_result:
     result = st.session_state.last_result
+
+    # Show query mode
+    query_type = getattr(result, "query_type", "factual")
+    mode_desc = get_query_type_description(query_type)
+    if query_type == "recommendation":
+        st.info(f"🎯 **{mode_desc}**")
+    elif query_type == "creative":
+        st.info(f"✨ **{mode_desc}**")
+    else:
+        st.info(f"📚 **{mode_desc}**")
+
     st.subheader("Plan")
     if result.plan:
         for idx, task in enumerate(result.plan, start=1):
@@ -185,6 +197,7 @@ if st.session_state.last_result:
 
     with st.expander("Debug"):
         st.write(f"Run ID: {result.run_id}")
+        st.write(f"Query type: {getattr(result, 'query_type', 'factual')}")
         st.write(f"Adaptive iterations: {getattr(result, 'adaptive_iterations', 0)}")
         st.write(f"QC passes: {getattr(result, 'qc_passes', 0)}")
         if result.errors:

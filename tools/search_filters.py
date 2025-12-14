@@ -27,6 +27,16 @@ BLOCKED_DOMAINS: Set[str] = {
     "linkedin.com",
 }
 
+# Domains/patterns that are video/media hosts - no useful text content for RAG
+VIDEO_DOMAINS: Set[str] = {
+    "youtube.com",
+    "youtu.be",
+    "vimeo.com",
+    "dailymotion.com",
+    "twitch.tv",
+    "bilibili.com",
+}
+
 # Domains that often return meta-content (about language, grammar) rather than topic content
 META_CONTENT_DOMAINS: Set[str] = {
     "stackexchange.com",
@@ -43,6 +53,12 @@ META_CONTENT_DOMAINS: Set[str] = {
 KNOWN_ROBOTS_BLOCKED_DOMAINS: Set[str] = {
     "anime-planet.com",
     "usingenglish.com",
+}
+
+# Domains that return mostly navigation/UI chrome instead of actual content
+# These pages are JS-heavy or mostly filter menus, unusable for RAG
+NAVIGATION_HEAVY_DOMAINS: Set[str] = {
+    "myanimelist.net/anime/season",  # Seasonal pages are all filters/navigation
 }
 
 # Source identifier for Gemini grounding (used in filter logic)
@@ -106,6 +122,7 @@ def filter_results(
     blocked_count = 0
     robots_blocked_count = 0
     meta_filtered_count = 0
+    video_filtered_count = 0
     irrelevant_count = 0
 
     for res in results:
@@ -119,6 +136,17 @@ def filter_results(
         if any(domain in url for domain in KNOWN_ROBOTS_BLOCKED_DOMAINS):
             robots_blocked_count += 1
             logger.debug("filter_robots_blocked_domain", extra={"url": url})
+            continue
+        # Skip navigation-heavy pages (mostly UI chrome, not content)
+        if any(path in url for path in NAVIGATION_HEAVY_DOMAINS):
+            blocked_count += 1
+            logger.debug("filter_navigation_heavy", extra={"url": url})
+            continue
+
+        # Skip video hosting domains (no useful text content for RAG)
+        if any(domain in url for domain in VIDEO_DOMAINS):
+            video_filtered_count += 1
+            logger.debug("filter_video_domain", extra={"url": url})
             continue
 
         # Skip meta-content domains (grammar/language sites) unless query is about language
@@ -167,6 +195,7 @@ def filter_results(
             "blocked": blocked_count,
             "robots_blocked": robots_blocked_count,
             "meta_filtered": meta_filtered_count,
+            "video_filtered": video_filtered_count,
             "irrelevant": irrelevant_count,
         },
     )

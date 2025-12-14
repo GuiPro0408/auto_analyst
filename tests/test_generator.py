@@ -6,7 +6,13 @@ Tests the LLM-based answer generation, verification, and citation building.
 import pytest
 
 from api.state import Chunk
-from tools.generator import build_citations, generate_answer, verify_answer
+from tools.generator import (
+    build_citations,
+    generate_answer,
+    verify_answer,
+    _generate_fallback_answer,
+    _clean_snippet,
+)
 from tests.conftest import FakeLLM, CapturingLLM
 
 
@@ -120,3 +126,80 @@ def test_build_citations_deduplicates_urls():
     assert len(urls) == 1
     assert urls[0] == "http://example.com"
     assert all(isinstance(c, dict) for c in citations)
+
+
+class TestFallbackAnswer:
+    """Tests for the improved fallback answer generation."""
+
+    @pytest.mark.unit
+    def test_fallback_empty_chunks(self):
+        """Fallback should handle empty chunks gracefully."""
+        answer = _generate_fallback_answer("test query", [])
+        assert "couldn't find" in answer.lower() or "insufficient" in answer.lower()
+
+    @pytest.mark.unit
+    def test_fallback_recommendation_query(self):
+        """Fallback should detect recommendation queries and format nicely."""
+        chunks = [
+            Chunk(
+                id="1",
+                text="Solo Leveling is a great anime. The Apothecary Diaries is also popular.",
+                metadata={
+                    "title": "Best Anime 2025",
+                    "url": "https://example.com/anime",
+                },
+            ),
+        ]
+        answer = _generate_fallback_answer("What anime should I watch?", chunks)
+        assert "**" in answer  # Has bold formatting
+        assert "Solo Leveling" in answer or "Apothecary" in answer
+
+    @pytest.mark.unit
+    def test_fallback_cleans_boilerplate(self):
+        """Fallback should clean URLs and boilerplate from snippets."""
+        chunks = [
+            Chunk(
+                id="1",
+                text="Sign in to your account. https://example.com/link Check out this anime.",
+                metadata={"title": "Test", "url": "https://example.com"},
+            ),
+        ]
+        answer = _generate_fallback_answer("test", chunks)
+        # Should not contain raw URLs in the snippet
+        assert "https://example.com/link" not in answer
+
+    @pytest.mark.unit
+    def test_fallback_deduplicates_sources(self):
+        """Fallback should not repeat the same source multiple times."""
+        chunks = [
+            Chunk(
+                id="1",
+                text="This is substantial content from the first chunk about anime recommendations for the winter season.",
+                metadata={"title": "Same Source", "url": "https://example.com"},
+            ),
+            Chunk(
+                id="2",
+                text="This is different substantial content from the second chunk about more anime series to watch.",
+                metadata={"title": "Same Source", "url": "https://example.com"},
+            ),
+        ]
+        answer = _generate_fallback_answer("test", chunks)
+        # Should only appear once since URL is duplicated
+        assert answer.count("Same Source") == 1
+
+    @pytest.mark.unit
+    def test_clean_snippet_removes_noise(self):
+        """Clean snippet should remove rating codes and boilerplate."""
+        raw = "5.80 4.4K Add to My List StudioILCA Source Original Great anime content here."
+        cleaned = _clean_snippet(raw)
+        assert "5.80" not in cleaned
+        assert "Add to My List" not in cleaned
+        assert "content" in cleaned.lower()
+
+    @pytest.mark.unit
+    def test_clean_snippet_preserves_sentences(self):
+        """Clean snippet should preserve complete sentences."""
+        raw = "This is a complete sentence. Here is another one. And a third."
+        cleaned = _clean_snippet(raw, max_len=50)
+        # Should end at a sentence boundary, not mid-word
+        assert cleaned.endswith(".") or cleaned.endswith("...")

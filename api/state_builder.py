@@ -176,6 +176,7 @@ def build_research_state(
         conversation_history=conversation_history,
         grounded_answer=grounded_answer,
         grounded_sources=grounded_sources,
+        query_type=result.get("query_type", "factual"),
     )
 
 
@@ -183,6 +184,7 @@ def create_initial_state(
     query: str,
     run_id: str,
     conversation_history: List[ConversationTurn],
+    query_type: str = "factual",
 ) -> Dict[str, Any]:
     """Create the initial state dict for the workflow.
 
@@ -190,6 +192,7 @@ def create_initial_state(
         query: The search query.
         run_id: Run correlation ID.
         conversation_history: Prior conversation turns.
+        query_type: Query classification (factual, recommendation, creative).
 
     Returns:
         Initial state dictionary.
@@ -215,4 +218,5 @@ def create_initial_state(
         "conversation_history": conversation_history,
         "grounded_answer": "",
         "grounded_sources": [],
+        "query_type": query_type,
     }

@@ -154,6 +154,7 @@ class TavilyBackend(SearchBackend):
             "max_results": min(max_results, 20),
             "search_depth": "advanced",
             "include_answer": False,
+            "include_raw_content": True,  # Get full pre-rendered page content
         }
 
         if topic in ("general", "news", "finance"):
@@ -174,13 +175,23 @@ class TavilyBackend(SearchBackend):
 
             results: List[SearchResult] = []
             for item in data.get("results", []):
+                # Tavily returns 'content' (snippet) and optionally 'raw_content' (full page)
+                # raw_content is pre-rendered by Tavily's headless browser - use it!
+                raw_content = item.get("raw_content", "") or ""
+                snippet_content = item.get("content", "") or ""
+
                 results.append(
                     SearchResult(
                         url=item.get("url", ""),
                         title=item.get("title", ""),
-                        snippet=item.get("content", "")[:TAVILY_SNIPPET_MAX_LEN],
+                        snippet=snippet_content[:TAVILY_SNIPPET_MAX_LEN],
                         source=SOURCE_TAVILY,
-                        metadata={"score": item.get("score", 0)},
+                        # Store raw_content if available, otherwise use snippet as content
+                        content=raw_content if raw_content else snippet_content,
+                        metadata={
+                            "score": item.get("score", 0),
+                            "has_raw_content": bool(raw_content),
+                        },
                     )
                 )
 

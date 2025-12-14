@@ -177,3 +177,109 @@ def test_clean_text_empty_string():
 def test_clean_text_only_whitespace():
     """Clean text should handle whitespace-only strings."""
     assert clean_text("   \n\t  ") == ""
+
+
+class TestMainContentExtraction:
+    """Tests for main content extraction from HTML."""
+
+    @pytest.mark.unit
+    def test_extracts_main_tag_content(self):
+        """Parser should prioritize <main> tag content."""
+        html = """
+        <html>
+        <body>
+            <header>Site Header Navigation Links</header>
+            <nav>Menu Item 1 Menu Item 2 Menu Item 3</nav>
+            <main>
+                <article>
+                    <p>This is the main article content that we want to extract.
+                    It should be substantial enough to be useful for RAG processing.</p>
+                </article>
+            </main>
+            <aside>Sidebar content with ads</aside>
+            <footer>Footer with copyright info</footer>
+        </body>
+        </html>
+        """
+        title, text = parse_html(html)
+        assert "main article content" in text
+        # Nav/header/footer should be stripped
+        assert "Menu Item" not in text
+        assert "Site Header" not in text
+
+    @pytest.mark.unit
+    def test_extracts_article_tag_content(self):
+        """Parser should extract content from <article> tag."""
+        html = """
+        <html>
+        <body>
+            <nav>Navigation</nav>
+            <article>
+                <h1>Article Title</h1>
+                <p>Article body text with sufficient content for processing and analysis.</p>
+                <p>More paragraphs of content here to make it substantial.</p>
+            </article>
+            <footer>Footer</footer>
+        </body>
+        </html>
+        """
+        title, text = parse_html(html)
+        assert "Article Title" in text
+        assert "Article body text" in text
+
+    @pytest.mark.unit
+    def test_removes_boilerplate_by_class(self):
+        """Parser should remove elements with boilerplate class names."""
+        html = """
+        <html>
+        <body>
+            <div class="header-nav">Navigation menu</div>
+            <div class="content">Main page content that is useful.</div>
+            <div class="sidebar-ad">Advertisement banner</div>
+            <div class="footer-links">Footer links</div>
+            <div class="social-share">Share on Facebook Twitter</div>
+        </body>
+        </html>
+        """
+        title, text = parse_html(html)
+        assert "Main page content" in text
+        # Boilerplate classes should be stripped
+        assert "Advertisement" not in text
+        assert "Footer links" not in text
+        assert "Share on Facebook" not in text
+
+    @pytest.mark.unit
+    def test_removes_boilerplate_by_id(self):
+        """Parser should remove elements with boilerplate IDs."""
+        html = """
+        <html>
+        <body>
+            <div id="main-navigation">Site navigation</div>
+            <div id="content">Actual content we want.</div>
+            <div id="sidebar-menu">Menu items</div>
+            <div id="cookie-banner">Cookie consent</div>
+        </body>
+        </html>
+        """
+        title, text = parse_html(html)
+        assert "Actual content" in text
+        # Boilerplate IDs should be stripped
+        assert "Site navigation" not in text
+        assert "Cookie consent" not in text
+
+    @pytest.mark.unit
+    def test_fallback_extracts_all_cleaned_text(self):
+        """Parser should fallback to all text when no semantic containers exist."""
+        html = """
+        <html>
+        <body>
+            <div>
+                <p>General content without semantic markup but still useful.</p>
+                <p>More content in regular divs and paragraphs.</p>
+            </div>
+        </body>
+        </html>
+        """
+        title, text = parse_html(html)
+        assert "General content" in text
+        assert "More content" in text

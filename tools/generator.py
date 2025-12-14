@@ -13,6 +13,86 @@ from api.logging_setup import get_logger
 from api.state import Chunk
 from tools.text_utils import STOPWORDS, extract_keywords, requires_structured_list
 
+# Query type constants (imported from query_classifier if needed elsewhere)
+QUERY_TYPE_FACTUAL = "factual"
+QUERY_TYPE_RECOMMENDATION = "recommendation"
+QUERY_TYPE_CREATIVE = "creative"
+
+# =============================================================================
+# PROMPT TEMPLATES BY QUERY TYPE
+# =============================================================================
+
+PROMPT_FACTUAL = """You are an evidence-based research assistant. Using only the context provided, \
+write a comprehensive, well-structured answer to the user question.
+
+Guidelines:
+- Organize your response with clear sections using **bold headers** when appropriate
+- Provide detailed explanations, not just brief summaries
+- Use bullet points or numbered lists to present multiple items clearly
+{list_instruction}\
+- Cite supporting evidence inline using [n] where n matches the numbered context entries
+- Include relevant details like dates, names, descriptions when available
+- Do not fabricate details - only use information from the provided context
+
+{context_instruction}User question: {query}
+
+Context:
+{context_block}
+
+Answer:"""
+
+PROMPT_RECOMMENDATION = """You are a knowledgeable assistant providing recommendations. \
+Use the search results as a reference, but also draw on your broader knowledge to give \
+helpful, personalized suggestions.
+
+Guidelines:
+- Provide specific, actionable recommendations (names, titles, etc.)
+- Explain WHY you're recommending each item
+- Organize with bullet points or numbered lists
+{list_instruction}\
+- Use [n] citations when a recommendation comes directly from the search results
+- Feel free to add recommendations from your knowledge even if not in the sources
+- Be conversational and helpful
+
+{context_instruction}User question: {query}
+
+Reference context (use as starting point, not limitation):
+{context_block}
+
+Recommendations:"""
+
+PROMPT_CREATIVE = """You are a helpful assistant answering a creative or open-ended question. \
+Use the provided context for reference and inspiration, but feel free to provide \
+your own insights and explanations.
+
+Guidelines:
+- Be informative and engaging
+- Structure your response clearly
+{list_instruction}\
+- Reference sources with [n] when using specific information from them
+- You may expand beyond the provided context when helpful
+
+{context_instruction}User question: {query}
+
+Reference context:
+{context_block}
+
+Response:"""
+
+# Map query types to their prompts
+PROMPT_TEMPLATES = {
+    QUERY_TYPE_FACTUAL: PROMPT_FACTUAL,
+    QUERY_TYPE_RECOMMENDATION: PROMPT_RECOMMENDATION,
+    QUERY_TYPE_CREATIVE: PROMPT_CREATIVE,
+}
+
+# Response delimiters for stripping prompt echoes
+RESPONSE_DELIMITERS = {
+    QUERY_TYPE_FACTUAL: "Answer:",
+    QUERY_TYPE_RECOMMENDATION: "Recommendations:",
+    QUERY_TYPE_CREATIVE: "Response:",
+}
+
 
 def _format_context(chunks: List[Chunk]) -> str:
     lines = []
@@ -154,6 +234,7 @@ def generate_answer(
     query: str,
     retrieved: List[Chunk],
     conversation_context: Optional[str] = None,
+    query_type: str = QUERY_TYPE_FACTUAL,
 ) -> Tuple[str, List[Dict[str, str]]]:
     logger = get_logger(__name__)
     logger.info(
@@ -162,6 +243,7 @@ def generate_answer(
             "query": query,
             "retrieved_chunks": len(retrieved),
             "conversation_context": bool(conversation_context),
+            "query_type": query_type,
         },
     )
     if not retrieved:
@@ -249,20 +331,20 @@ def generate_answer(
             "with an inline citation [n] for that item.\n"
         )
 
-    prompt = (
-        "You are an evidence-based research assistant. Using only the context provided, "
-        "write a comprehensive, well-structured answer to the user question.\n\n"
-        "Guidelines:\n"
-        "- Organize your response with clear sections using **bold headers** when appropriate\n"
-        "- Provide detailed explanations, not just brief summaries\n"
-        "- Use bullet points or numbered lists to present multiple items clearly\n"
-        f"{list_instruction}"
-        "- Cite supporting evidence inline using [n] where n matches the numbered context entries\n"
-        "- Include relevant details like dates, names, descriptions when available\n"
-        "- Do not fabricate details - only use information from the provided context\n\n"
-        f"{context_instruction}User question: {query}\n\nContext:\n{context_block}\n\nAnswer:"
+    # Select prompt template based on query type
+    prompt_template = PROMPT_TEMPLATES.get(query_type, PROMPT_FACTUAL)
+    response_delimiter = RESPONSE_DELIMITERS.get(query_type, "Answer:")
+
+    prompt = prompt_template.format(
+        list_instruction=list_instruction,
+        context_instruction=context_instruction,
+        query=query,
+        context_block=context_block,
     )
-    logger.debug("generate_llm_call", extra={"prompt_length": len(prompt)})
+    logger.debug(
+        "generate_llm_call",
+        extra={"prompt_length": len(prompt), "query_type": query_type},
+    )
     output = llm(prompt)[0]["generated_text"]
     logger.debug(
         "generate_llm_response",
@@ -270,8 +352,8 @@ def generate_answer(
     )
     # Strip prompt echo if present
     answer = (
-        output.split("Answer:", 1)[-1].strip()
-        if "Answer:" in output
+        output.split(response_delimiter, 1)[-1].strip()
+        if response_delimiter in output
         else output.strip()
     )
 
@@ -297,32 +379,214 @@ def generate_answer(
     return answer, citations
 
 
-def _generate_fallback_answer(query: str, chunks: List[Chunk]) -> str:
-    """Generate a structured extractive answer when LLM output is incoherent."""
-    if not chunks:
-        return "Unable to generate a coherent answer from the available context."
+def _clean_snippet(text: str, max_len: int = 300) -> str:
+    """Extract a clean, readable snippet from raw chunk text."""
+    if not text:
+        return ""
 
-    lines = [f"## Research Results: {query}\n"]
-    for idx, chunk in enumerate(chunks[:8]):
+    # Remove markdown headers
+    text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)  # # Headers
+    text = re.sub(r"\s+#{1,6}\s+", " ", text)  # Inline # headers
+
+    # Remove common boilerplate patterns
+    text = re.sub(r"https?://\S+", "", text)  # URLs
+    text = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", text)  # [text](url) -> text
+    text = re.sub(r"\[\s*\]\([^)]*\)", "", text)  # Empty markdown links
+    text = re.sub(
+        r"/[a-z0-9_-]+\)", "", text, flags=re.IGNORECASE
+    )  # URL path fragments like /winter-2025)
+    text = re.sub(
+        r"-\d+-[a-z0-9-]+/?\)", "", text, flags=re.IGNORECASE
+    )  # URL slugs like -2-release-date-story/)
+    text = re.sub(
+        r"\([^)]*release-date[^)]*\)", "", text, flags=re.IGNORECASE
+    )  # Full URL path in parens
+
+    # Sign in / account prompts
+    text = re.sub(r"Sign in[^.]*(?:account|now|to your)", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"Sign in to your \w+ account", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"Subscribe.*?newsletter", "", text, flags=re.IGNORECASE)
+
+    # MAL/anime site specific noise
+    text = re.sub(
+        r"\d+\s*eps?,?\s*\d*\s*min", "", text
+    )  # Episode info like "11 eps, 23 min"
+    text = re.sub(r"\d{8}", "", text)  # Date codes like 20250112
+    text = re.sub(r"Add to My List", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"Studio\w+", "", text)  # StudioILCA etc
+    text = re.sub(r"Source\s+\w+", "", text)  # Source Original etc
+    text = re.sub(r"\d+\.\d+\s+\d+\.?\d*K?", "", text)  # Ratings like "5.80 4.4K"
+
+    # Navigation menu items (MAL, etc.)
+    nav_items = [
+        r"\bArchive\b",
+        r"\bNew Manga\b",
+        r"\bJump to\b",
+        r"\bNot in My List\b",
+        r"\bPlan to Watch\b",
+        r"\bOn-Hold\b",
+        r"\bWatching\b",
+        r"\bCompleted\b",
+        r"\bDropped\b",
+        r"\bClear All\b",
+        r"\bFilter Sort\b",
+        r"\bR18\+\b",
+        r"\bAvailable in My Region\b",
+        r"\bClick once to include\b",
+    ]
+    for nav in nav_items:
+        text = re.sub(nav, "", text, flags=re.IGNORECASE)
+
+    # Clean whitespace
+    text = re.sub(r"\s+", " ", text).strip()
+
+    # Try to find complete sentences
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    result = []
+    current_len = 0
+
+    for sentence in sentences:
+        sentence = sentence.strip()
+        if not sentence or len(sentence) < 10:
+            continue
+        if current_len + len(sentence) > max_len:
+            break
+        result.append(sentence)
+        current_len += len(sentence) + 1
+
+    if result:
+        return " ".join(result)
+
+    # Fallback: just truncate cleanly
+    if len(text) > max_len:
+        # Try to break at a word boundary
+        truncated = text[:max_len].rsplit(" ", 1)[0]
+        return truncated + "..." if truncated else text[:max_len] + "..."
+
+    return text
+
+
+def _extract_key_items(chunks: List[Chunk]) -> List[str]:
+    """Extract named items (anime titles, etc.) from chunks."""
+    items = set()
+
+    # Common anime title patterns
+    title_patterns = [
+        r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*(?:\s+(?:Season|Part)\s+\d+)?)",  # Title Case
+        r"([A-Z][a-z]+(?:'s|:)\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)",  # Possessive/subtitle
+    ]
+
+    for chunk in chunks[:5]:
+        text = chunk.text or ""
+        meta = chunk.metadata or {}
+
+        # Get title from metadata
+        title = meta.get("title", "")
+        if title and "anime" not in title.lower() and len(title) < 80:
+            # Extract potential anime names from article titles
+            for part in re.split(r"[-–:|]", title):
+                part = part.strip()
+                if (
+                    part
+                    and 3 < len(part) < 50
+                    and not part.lower().startswith(
+                        ("best", "new", "top", "winter", "fall")
+                    )
+                ):
+                    items.add(part)
+
+        # Look for known anime patterns in text
+        known_titles = [
+            "Solo Leveling",
+            "The Apothecary Diaries",
+            "Blue Exorcist",
+            "Fate/strange Fake",
+            "Zenshu",
+            "Jujutsu Kaisen",
+            "My Hero Academia",
+            "Attack on Titan",
+            "Demon Slayer",
+            "One Piece",
+            "Naruto",
+            "Hell's Paradise",
+            "Oshi no Ko",
+            "Haikyuu",
+            "Chainsaw Man",
+        ]
+        for known in known_titles:
+            if known.lower() in text.lower():
+                items.add(known)
+
+    return list(items)[:10]
+
+
+def _generate_fallback_answer(query: str, chunks: List[Chunk]) -> str:
+    """Generate a structured, readable answer when LLM is unavailable."""
+    if not chunks:
+        return (
+            "I couldn't find sufficient information to answer your question. "
+            "Please try rephrasing or being more specific."
+        )
+
+    # Determine if this looks like a recommendation query
+    is_recommendation = any(
+        kw in query.lower()
+        for kw in ["recommend", "suggest", "should", "watch", "best", "top", "good"]
+    )
+
+    # Extract key items mentioned
+    key_items = _extract_key_items(chunks)
+
+    # Build a cleaner answer
+    lines = []
+
+    if is_recommendation and key_items:
+        lines.append(
+            f"**Based on the sources found, here are some options for your query:**\n"
+        )
+        lines.append("### Mentioned Titles\n")
+        for item in key_items[:8]:
+            lines.append(f"- **{item}**\n")
+        lines.append("\n")
+
+    lines.append("### Source Highlights\n")
+
+    seen_sources = set()
+    source_count = 0
+
+    for chunk in chunks[:6]:
         meta = chunk.metadata or {}
         title = meta.get("title", "Source")
         url = meta.get("url", "")
-        raw_text = (chunk.text or "").strip()
-        if not raw_text:
+
+        # Skip duplicate sources
+        source_key = url or title
+        if source_key in seen_sources:
             continue
-        # Take the first sentence-ish fragment to avoid dumping nav chrome
-        sentence_end = re.split(r"(?<=[.!?])\s+", raw_text)
-        snippet = sentence_end[0][:400].replace("\n", " ").strip()
-        if not snippet.endswith((".", "!", "?")):
-            snippet += "..."
-        lines.append(f"- {title}: {snippet} [{idx + 1}]")
+        seen_sources.add(source_key)
+        source_count += 1
+
+        # Clean and format the snippet
+        snippet = _clean_snippet(chunk.text or "", max_len=250)
+        if not snippet or len(snippet) < 20:
+            continue
+
+        lines.append(f"**{source_count}. {title}**\n")
+        lines.append(f"> {snippet}\n")
         if url:
-            lines.append(f" (source: {url})")
+            lines.append(f"[Read more]({url})\n")
         lines.append("\n")
 
+    if not lines or source_count == 0:
+        return (
+            "I found some sources but couldn't extract meaningful content. "
+            "The pages may require JavaScript or have restricted access."
+        )
+
+    lines.append("---\n")
     lines.append(
-        "\n---\n*Note: This is a structured summary of the retrieved sources. "
-        "Each bullet is tied to the numbered citation.*"
+        "*This summary was generated from retrieved sources. "
+        "For detailed information, please visit the linked sources above.*"
     )
 
     return "".join(lines)

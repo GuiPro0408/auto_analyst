@@ -111,7 +111,10 @@ class ChromaVectorStore(VectorStore):
             distances = results.get("distances", [[]])
             metadata = metadatas[0][idx] if metadatas and metadatas[0] else {}
             distance = distances[0][idx] if distances and distances[0] else 0.0
-            score = 1.0 - distance
+            # ChromaDB cosine distance is in [0, 2] range (0=identical, 2=opposite)
+            # Convert to similarity in [0, 1] range: similarity = 1 - (distance / 2)
+            # This ensures scores stay in [0, 1] and don't go negative
+            score = max(0.0, 1.0 - (distance / 2.0))
             chunk_id = metadata.get("chunk_id") or f"chroma-{idx}"
             chunk = Chunk(
                 id=str(chunk_id),

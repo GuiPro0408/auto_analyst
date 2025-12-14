@@ -39,6 +39,7 @@ from tools.fetcher import fetch_documents_parallel, fetch_url
 from tools.generator import build_citations, generate_answer, verify_answer
 from tools.planner import plan_query
 from tools.quality_control import assess_answer, improve_answer
+from tools.query_classifier import classify_query, get_query_type_description
 from tools.retriever import build_vector_store, chunk_documents
 from tools.reranker import rerank_chunks
 from tools.search import SOURCE_GEMINI_GROUNDING, run_search_tasks
@@ -235,12 +236,15 @@ def build_workflow(
                     "No chunks available; downstream answers may be empty."
                 )
 
-            return cast(GraphState, {
-                "documents": documents,
-                "warnings": base_warnings + new_warnings,
-                "chunks": chunks,
-                **preserve_grounded_state(state),
-            })
+            return cast(
+                GraphState,
+                {
+                    "documents": documents,
+                    "warnings": base_warnings + new_warnings,
+                    "chunks": chunks,
+                    **preserve_grounded_state(state),
+                },
+            )
         except Exception as exc:  # pragma: no cover - defensive
             log.exception("fetch_failed", extra={"error": str(exc)})
             # Use immutable concatenation
@@ -248,13 +252,16 @@ def build_workflow(
             updated_warnings = state.get("warnings", []) + [
                 "Fetch failed; proceeding with empty documents."
             ]
-            return cast(GraphState, {
-                "documents": [],
-                "warnings": updated_warnings,
-                "errors": updated_errors,
-                "chunks": [],
-                **preserve_grounded_state(state),
-            })
+            return cast(
+                GraphState,
+                {
+                    "documents": [],
+                    "warnings": updated_warnings,
+                    "errors": updated_errors,
+                    "chunks": [],
+                    **preserve_grounded_state(state),
+                },
+            )
 
     def retrieve_node(state: GraphState) -> GraphState:
         log = get_logger("api.graph.retrieve", run_id=state.get("run_id"))
@@ -266,12 +273,15 @@ def build_workflow(
             updated_warnings = state.get("warnings", []) + [
                 "No chunks to retrieve from; skipping retrieval."
             ]
-            return cast(GraphState, {
-                "retrieved": [],
-                "retrieval_scores": [],
-                "warnings": updated_warnings,
-                **preserve_grounded_state(state),
-            })
+            return cast(
+                GraphState,
+                {
+                    "retrieved": [],
+                    "retrieval_scores": [],
+                    "warnings": updated_warnings,
+                    **preserve_grounded_state(state),
+                },
+            )
         try:
             query_text = state.get("query", "")
             log.info(
@@ -323,12 +333,15 @@ def build_workflow(
                 updated_warnings = updated_warnings + [
                     "No retrieved context; answer may be unsupported."
                 ]
-            return cast(GraphState, {
-                "retrieved": retrieved,
-                "retrieval_scores": scores,
-                "warnings": updated_warnings,
-                **preserve_grounded_state(state),
-            })
+            return cast(
+                GraphState,
+                {
+                    "retrieved": retrieved,
+                    "retrieval_scores": scores,
+                    "warnings": updated_warnings,
+                    **preserve_grounded_state(state),
+                },
+            )
         except Exception as exc:  # pragma: no cover - defensive
             log.exception("retrieve_failed", extra={"error": str(exc)})
             # Use immutable concatenation
@@ -336,13 +349,16 @@ def build_workflow(
             updated_warnings = state.get("warnings", []) + [
                 "Retrieval failed; proceeding with empty context."
             ]
-            return cast(GraphState, {
-                "retrieved": [],
-                "retrieval_scores": [],
-                "warnings": updated_warnings,
-                "errors": updated_errors,
-                **preserve_grounded_state(state),
-            })
+            return cast(
+                GraphState,
+                {
+                    "retrieved": [],
+                    "retrieval_scores": [],
+                    "warnings": updated_warnings,
+                    "errors": updated_errors,
+                    **preserve_grounded_state(state),
+                },
+            )
 
     def adaptive_node(state: GraphState) -> GraphState:
         log = get_logger("api.graph.adaptive", run_id=state.get("run_id"))
@@ -362,11 +378,14 @@ def build_workflow(
                     "retrieved": len(retrieved),
                 },
             )
-            return cast(GraphState, {
-                "warnings": base_warnings,
-                "adaptive_iterations": adaptive_iterations,
-                **preserve_grounded_state(state),
-            })
+            return cast(
+                GraphState,
+                {
+                    "warnings": base_warnings,
+                    "adaptive_iterations": adaptive_iterations,
+                    **preserve_grounded_state(state),
+                },
+            )
 
         log.info(
             "adaptive_start",
@@ -399,11 +418,14 @@ def build_workflow(
                     "adaptive_iterations": adaptive_iterations,
                 },
             )
-            return cast(GraphState, {
-                "warnings": updated_warnings,
-                "adaptive_iterations": adaptive_iterations,
-                **preserve_grounded_state(state),
-            })
+            return cast(
+                GraphState,
+                {
+                    "warnings": updated_warnings,
+                    "adaptive_iterations": adaptive_iterations,
+                    **preserve_grounded_state(state),
+                },
+            )
         log.info(
             "adaptive_triggered",
             extra={
@@ -455,17 +477,20 @@ def build_workflow(
                 "duration_ms": (perf_counter() - start) * 1000,
             },
         )
-        return cast(GraphState, {
-            "plan": plan,
-            "search_results": results,
-            "documents": documents,
-            "chunks": chunks,
-            "retrieved": retrieved,
-            "retrieval_scores": retrieval_scores,
-            "warnings": updated_warnings + cycle_warnings,
-            "adaptive_iterations": adaptive_iterations,
-            **preserve_grounded_state(state),
-        })
+        return cast(
+            GraphState,
+            {
+                "plan": plan,
+                "search_results": results,
+                "documents": documents,
+                "chunks": chunks,
+                "retrieved": retrieved,
+                "retrieval_scores": retrieval_scores,
+                "warnings": updated_warnings + cycle_warnings,
+                "adaptive_iterations": adaptive_iterations,
+                **preserve_grounded_state(state),
+            },
+        )
 
     def generate_node(state: GraphState) -> GraphState:
         log = get_logger("api.graph.generate", run_id=state.get("run_id"))
@@ -515,11 +540,13 @@ def build_workflow(
                 "warnings": warnings,
             }
         try:
+            query_type = state.get("query_type", "factual")
             answer, citations = generate_answer(
                 llm,
                 query,
                 retrieved,
                 conversation_context=history_summary,
+                query_type=query_type,
             )
             log.info(
                 "generate_complete",
@@ -527,6 +554,7 @@ def build_workflow(
                     "citations": len(citations),
                     "answer_length": len(answer),
                     "duration_ms": (perf_counter() - start) * 1000,
+                    "query_type": query_type,
                 },
             )
             return {"draft_answer": answer, "citations": citations}
@@ -730,6 +758,16 @@ def run_research(
     if cached_result:
         return cached_result
 
+    # Classify the query to determine answer generation strategy
+    query_type = classify_query(query, run_id=run_id)
+    logger.info(
+        "query_classified",
+        extra={
+            "query_type": query_type,
+            "description": get_query_type_description(query_type),
+        },
+    )
+
     logger.info(
         "run_research_start",
         extra={
@@ -739,6 +777,7 @@ def run_research(
             "has_llm": llm is not None,
             "has_custom_store": vector_store is not None,
             "history_turns": len(history_window),
+            "query_type": query_type,
         },
     )
 
@@ -750,7 +789,7 @@ def run_research(
         top_k=top_k,
         run_id=run_id,
     )
-    initial_state = create_initial_state(query, run_id, history_window)
+    initial_state = create_initial_state(query, run_id, history_window, query_type)
     result = workflow.invoke(cast(GraphState, initial_state))
 
     # Build research state (handles grounded answer extraction internally)

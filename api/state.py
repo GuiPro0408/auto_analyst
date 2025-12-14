@@ -116,6 +116,7 @@ class ResearchState:
     conversation_history: List[ConversationTurn] = field(default_factory=list)
     grounded_answer: str = ""
     grounded_sources: List[Chunk] = field(default_factory=list)
+    query_type: str = "factual"  # factual, recommendation, or creative
 
     def add_error(self, message: str) -> None:
         """Append an error message to the errors list."""
@@ -154,3 +155,4 @@ class GraphState(TypedDict, total=False):
     conversation_history: List[ConversationTurn]
     grounded_answer: str  # Direct answer from Gemini grounding
     grounded_sources: List[Chunk]  # Sources from grounding for citations
+    query_type: str  # Query classification: factual, recommendation, creative

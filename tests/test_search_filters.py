@@ -7,6 +7,7 @@ from tools.search_filters import (
     BLOCKED_DOMAINS,
     KNOWN_ROBOTS_BLOCKED_DOMAINS,
     META_CONTENT_DOMAINS,
+    VIDEO_DOMAINS,
     dedupe_results,
     filter_results,
 )
@@ -194,3 +195,59 @@ class TestBlockedDomains:
         assert isinstance(META_CONTENT_DOMAINS, set)
         assert len(META_CONTENT_DOMAINS) > 0
         assert "stackexchange.com" in META_CONTENT_DOMAINS
+
+    def test_video_domains_is_set(self):
+        """VIDEO_DOMAINS should be a non-empty set."""
+        assert isinstance(VIDEO_DOMAINS, set)
+        assert len(VIDEO_DOMAINS) > 0
+
+    @pytest.mark.parametrize(
+        "domain",
+        ["youtube.com", "youtu.be", "vimeo.com", "twitch.tv"],
+    )
+    def test_contains_video_domains(self, domain):
+        """Should contain major video hosting domains."""
+        assert domain in VIDEO_DOMAINS
+
+
+class TestVideoFiltering:
+    """Tests for video domain filtering."""
+
+    @pytest.mark.parametrize(
+        "video_url",
+        [
+            "https://www.youtube.com/watch?v=abc123",
+            "https://youtu.be/abc123",
+            "https://vimeo.com/123456",
+            "https://www.twitch.tv/channel",
+            "https://www.bilibili.com/video/BV123",
+        ],
+    )
+    def test_filters_video_domains(self, video_url):
+        """Should filter out video hosting URLs."""
+        results = [
+            SearchResult(url=video_url, title="Video", snippet="Watch this video"),
+        ]
+        filtered = filter_results("anime recommendations", results)
+        assert len(filtered) == 0
+
+    def test_preserves_non_video_results(self):
+        """Should keep non-video URLs while filtering videos."""
+        results = [
+            SearchResult(
+                url="https://www.youtube.com/watch?v=abc",
+                title="Video",
+                snippet="video",
+            ),
+            SearchResult(
+                url="https://myanimelist.net/anime", title="MAL", snippet="anime list"
+            ),
+            SearchResult(
+                url="https://anilist.co/anime", title="AniList", snippet="anime"
+            ),
+        ]
+        filtered = filter_results("anime", results)
+        assert len(filtered) == 2
+        urls = [r.url for r in filtered]
+        assert "https://myanimelist.net/anime" in urls
+        assert "https://anilist.co/anime" in urls

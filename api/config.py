@@ -109,6 +109,10 @@ CHUNK_SIZE = int(os.getenv("AUTO_ANALYST_CHUNK_SIZE", "1000"))
 CHUNK_OVERLAP = int(os.getenv("AUTO_ANALYST_CHUNK_OVERLAP", "200"))
 TOP_K_RESULTS = int(os.getenv("AUTO_ANALYST_TOP_K", "6"))
 
+# Minimum content length (chars) to consider a document useful for RAG
+# Documents shorter than this are filtered out (likely boilerplate/nav only)
+MIN_CONTENT_LENGTH = int(os.getenv("AUTO_ANALYST_MIN_CONTENT_LENGTH", "200"))
+
 # =============================================================================
 # CACHE CONFIGURATION
 # =============================================================================
