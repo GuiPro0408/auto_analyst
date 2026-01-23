@@ -104,6 +104,7 @@ def decode_research_state(payload: Dict[str, Any]) -> ResearchState:
         grounded_sources=[
             _as_chunk(item) for item in state_payload.get("grounded_sources", [])
         ],
+        query_type=state_payload.get("query_type", "factual"),
     )
 
 

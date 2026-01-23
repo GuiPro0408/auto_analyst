@@ -404,20 +404,22 @@ class HuggingFaceInferenceLLM:
 @lru_cache(maxsize=2)
 def load_llm(model_name: str = DEFAULT_LLM_MODEL):
     """Load an LLM via cloud API (Gemini, Groq, or HuggingFace Inference).
-    
+
     Cloud providers are used exclusively to avoid local GPU/CPU inference costs.
     Priority order for fallback: Gemini -> Groq -> HuggingFace.
     """
     logger = get_logger(__name__)
 
     backend = LLM_BACKEND.lower()
-    
+
     # Prepare fallbacks
     groq_llm = None
     if GROQ_API_KEY:
         try:
             groq_llm = OpenAICompatibleLLM(
-                model_name=GROQ_MODEL if model_name == DEFAULT_LLM_MODEL else model_name,
+                model_name=(
+                    GROQ_MODEL if model_name == DEFAULT_LLM_MODEL else model_name
+                ),
                 api_key=GROQ_API_KEY,
                 generation_kwargs=GENERATION_KWARGS,
                 base_url="https://api.groq.com/openai/v1",
@@ -426,6 +428,23 @@ def load_llm(model_name: str = DEFAULT_LLM_MODEL):
             logger.info("load_llm_groq_ready")
         except Exception as e:
             logger.warning("load_llm_groq_init_failed", extra={"error": str(e)})
+
+    hf_fallback = None
+    if HUGGINGFACE_API_TOKEN:
+        try:
+            hf_model = (
+                HUGGINGFACE_INFERENCE_MODEL
+                if model_name == DEFAULT_LLM_MODEL
+                else model_name
+            )
+            hf_fallback = HuggingFaceInferenceLLM(
+                model_name=hf_model,
+                api_token=HUGGINGFACE_API_TOKEN,
+                generation_kwargs=GENERATION_KWARGS,
+            )
+            logger.info("load_llm_hf_ready")
+        except Exception as exc:
+            logger.warning("load_llm_hf_init_failed", extra={"error": str(exc)})
 
     # Chain fallbacks: Gemini -> Groq -> HF
     primary_fallback = groq_llm or hf_fallback
@@ -457,12 +476,16 @@ def load_llm(model_name: str = DEFAULT_LLM_MODEL):
 
     if backend == "groq":
         if not groq_llm:
-            raise ValueError("GROQ_API_KEY not configured but requested as primary backend.")
+            raise ValueError(
+                "GROQ_API_KEY not configured but requested as primary backend."
+            )
         return groq_llm
 
     if backend in {"huggingface", "hf", "hf_inference"}:
         if not hf_fallback:
-            raise ValueError("HUGGINGFACE_API_TOKEN not configured but requested as primary backend.")
+            raise ValueError(
+                "HUGGINGFACE_API_TOKEN not configured but requested as primary backend."
+            )
         return hf_fallback
 
     raise ValueError(f"Unsupported LLM_BACKEND: {backend}")

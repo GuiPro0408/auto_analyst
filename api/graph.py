@@ -67,6 +67,13 @@ def preserve_grounded_state(state: GraphState) -> dict[str, Any]:
     }
 
 
+def resolve_effective_query(state: GraphState) -> str:
+    """Resolve follow-up queries using conversation history."""
+    query_text = state.get("query", "")
+    history = state.get("conversation_history", []) or []
+    return resolve_followup_query(query_text, history)
+
+
 def build_workflow(
     llm=None,
     vector_store: Optional[VectorStore] = None,
@@ -126,19 +133,21 @@ def build_workflow(
         start = perf_counter()
         plan = state.get("plan", [])
         query = state.get("query", "")
+        effective_query = resolve_effective_query(state)
         log.info(
             "search_start",
             extra={
                 "tasks": len(plan),
                 "task_queries": [t.text for t in plan],
                 "query": query,
+                "resolved_query_differs": effective_query != query,
             },
         )
         try:
-            if SMART_SEARCH_ENABLED and query:
-                log.info("search_using_smart_search", extra={"query": query})
+            if SMART_SEARCH_ENABLED and effective_query:
+                log.info("search_using_smart_search", extra={"query": effective_query})
                 results, warnings = smart_search(
-                    query,
+                    effective_query,
                     max_results=5,
                     run_id=state.get("run_id"),
                 )
@@ -284,20 +293,22 @@ def build_workflow(
             )
         try:
             query_text = state.get("query", "")
+            effective_query = resolve_effective_query(state)
             log.info(
                 "retrieve_start",
                 extra={
                     "query": query_text,
+                    "resolved_query_differs": effective_query != query_text,
                     "available_chunks": len(chunks),
                     "top_k": top_k,
                 },
             )
-            scored = store.query(query_text, top_k=top_k)
+            scored = store.query(effective_query, top_k=top_k)
             retrieved = [sc.chunk for sc in scored]
             scores = [sc.score for sc in scored]
             if ENABLE_RERANKER and retrieved:
                 reranked, rerank_scores = rerank_chunks(
-                    query_text,
+                    effective_query,
                     retrieved,
                     top_k=top_k,
                     run_id=state.get("run_id"),
@@ -368,6 +379,7 @@ def build_workflow(
         retrieved = state.get("retrieved", [])
         retrieval_scores = state.get("retrieval_scores", [])
         query_text = state.get("query", "")
+        effective_query = resolve_effective_query(state)
 
         # If we already have a grounded answer, skip adaptive expansion
         if state.get("grounded_answer") and state.get("grounded_sources"):
@@ -401,7 +413,7 @@ def build_workflow(
             retrieved,
             min_chunks=1,
             run_id=state.get("run_id"),
-            query=query_text,
+            query=effective_query,
             scores=retrieval_scores,
         )
         # Use immutable concatenation
@@ -438,7 +450,7 @@ def build_workflow(
                 ),
             },
         )
-        new_tasks = refine_plan(state.get("query", ""), state.get("plan", []))
+        new_tasks = refine_plan(effective_query, state.get("plan", []))
         plan = state.get("plan", []) + new_tasks
         log.debug(
             "adaptive_refined_plan",
@@ -461,7 +473,7 @@ def build_workflow(
         store.clear()
         chunks = chunk_documents(documents, chunker, run_id=state.get("run_id"))
         store.upsert(chunks)
-        scored = store.query(query_text, top_k=top_k)
+        scored = store.query(effective_query, top_k=top_k)
         retrieved = [sc.chunk for sc in scored]
         retrieval_scores = [sc.score for sc in scored]
         adaptive_iterations += 1
@@ -497,6 +509,7 @@ def build_workflow(
         start = perf_counter()
         retrieved = state.get("retrieved", [])
         query = state.get("query", "")
+        effective_query = resolve_effective_query(state)
         history_summary = summarize_history(
             state.get("conversation_history", []) or [],
             max_chars=CONVERSATION_SUMMARY_CHARS,
@@ -526,6 +539,7 @@ def build_workflow(
             "generate_start",
             extra={
                 "query": query,
+                "resolved_query_differs": effective_query != query,
                 "retrieved_chunks": len(retrieved),
                 "history_context": bool(history_summary),
             },
@@ -543,7 +557,7 @@ def build_workflow(
             query_type = state.get("query_type", "factual")
             answer, citations = generate_answer(
                 llm,
-                query,
+                effective_query,
                 retrieved,
                 conversation_context=history_summary,
                 query_type=query_type,
@@ -573,6 +587,7 @@ def build_workflow(
         start = perf_counter()
         draft = state.get("draft_answer", "")
         query = state.get("query", "")
+        effective_query = resolve_effective_query(state)
         retrieved = state.get("retrieved", [])
         history_summary = summarize_history(
             state.get("conversation_history", []) or [],
@@ -584,13 +599,14 @@ def build_workflow(
                 "draft_length": len(draft),
                 "retrieved_chunks": len(retrieved),
                 "history_context": bool(history_summary),
+                "resolved_query_differs": effective_query != query,
             },
         )
         try:
             verified = verify_answer(
                 llm,
                 draft,
-                query,
+                effective_query,
                 retrieved,
                 conversation_context=history_summary,
             )

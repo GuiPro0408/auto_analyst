@@ -91,7 +91,9 @@ class FaissVectorStore(VectorStore):
         for score, idx in zip(scores[0], indices[0]):
             if idx == -1 or idx >= len(self.chunks):
                 continue
-            scored.append(ScoredChunk(chunk=self.chunks[idx], score=float(score)))
+            normalized_score = (float(score) + 1.0) / 2.0
+            normalized_score = max(0.0, min(1.0, normalized_score))
+            scored.append(ScoredChunk(chunk=self.chunks[idx], score=normalized_score))
         logger.info(
             "faiss_query_complete",
             extra={

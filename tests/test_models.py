@@ -144,6 +144,7 @@ def test_load_llm_falls_back_to_hf_when_gemini_dependency_missing(monkeypatch):
     monkeypatch.setattr(models, "GEMINI_API_KEY", "secret")
     monkeypatch.setattr(models, "HUGGINGFACE_API_TOKEN", "hf-token")
     monkeypatch.setattr(models, "HUGGINGFACE_INFERENCE_MODEL", "hf/default")
+    monkeypatch.setattr(models, "GROQ_API_KEY", "")
 
     monkeypatch.setattr(models, "GEMINI_API_KEYS", [])
 
