@@ -13,6 +13,8 @@ from api.config import (
     GEMINI_API_KEYS,
     GEMINI_MODEL,
     GENERATION_KWARGS,
+    GROQ_API_KEY,
+    GROQ_MODEL,
     HUGGINGFACE_API_TOKEN,
     HUGGINGFACE_INFERENCE_MODEL,
     LLM_BACKEND,
@@ -20,6 +22,7 @@ from api.config import (
 )
 from api.key_rotator import APIKeyRotator, get_default_rotator
 from api.logging_setup import get_logger
+from tools.openai_compatible_llm import OpenAICompatibleLLM
 
 # Re-export for backward compatibility with tests
 GEMINI_API_KEY = GEMINI_API_KEYS[0] if GEMINI_API_KEYS else ""
@@ -400,13 +403,33 @@ class HuggingFaceInferenceLLM:
 
 @lru_cache(maxsize=2)
 def load_llm(model_name: str = DEFAULT_LLM_MODEL):
-    """Load an LLM via cloud API (Gemini or HuggingFace Inference).
-
+    """Load an LLM via cloud API (Gemini, Groq, or HuggingFace Inference).
+    
     Cloud providers are used exclusively to avoid local GPU/CPU inference costs.
+    Priority order for fallback: Gemini -> Groq -> HuggingFace.
     """
     logger = get_logger(__name__)
 
     backend = LLM_BACKEND.lower()
+    
+    # Prepare fallbacks
+    groq_llm = None
+    if GROQ_API_KEY:
+        try:
+            groq_llm = OpenAICompatibleLLM(
+                model_name=GROQ_MODEL if model_name == DEFAULT_LLM_MODEL else model_name,
+                api_key=GROQ_API_KEY,
+                generation_kwargs=GENERATION_KWARGS,
+                base_url="https://api.groq.com/openai/v1",
+                provider_name="groq",
+            )
+            logger.info("load_llm_groq_ready")
+        except Exception as e:
+            logger.warning("load_llm_groq_init_failed", extra={"error": str(e)})
+
+    # Chain fallbacks: Gemini -> Groq -> HF
+    primary_fallback = groq_llm or hf_fallback
+
     if backend == "gemini":
         configured_model = (
             GEMINI_MODEL if model_name == DEFAULT_LLM_MODEL else model_name
@@ -419,84 +442,27 @@ def load_llm(model_name: str = DEFAULT_LLM_MODEL):
             },
         )
         try:
-            # Create HuggingFace fallback if token is available
-            fallback_llm = None
-            if HUGGINGFACE_API_TOKEN:
-                fallback_model = (
-                    HUGGINGFACE_INFERENCE_MODEL
-                    if model_name == DEFAULT_LLM_MODEL
-                    else model_name
-                )
-                try:
-                    fallback_llm = HuggingFaceInferenceLLM(
-                        model_name=fallback_model,
-                        api_token=HUGGINGFACE_API_TOKEN,
-                        generation_kwargs=GENERATION_KWARGS,
-                    )
-                    logger.info(
-                        "load_llm_hf_fallback_ready",
-                        extra={"fallback_model": fallback_model},
-                    )
-                except Exception as fallback_exc:
-                    logger.warning(
-                        "load_llm_hf_fallback_init_failed",
-                        extra={"error": str(fallback_exc)},
-                    )
-
-            # Use shared key rotator
             key_rotator = get_default_rotator(GEMINI_API_KEYS)
             return GeminiLLM(
                 model_name=configured_model,
                 generation_kwargs=GENERATION_KWARGS,
                 key_rotator=key_rotator,
-                fallback_llm=fallback_llm,
+                fallback_llm=primary_fallback,
             )
         except ImportError as exc:
-            logger.warning(
-                "load_llm_gemini_dependency_missing",
-                extra={"error": str(exc)},
-            )
-            if HUGGINGFACE_API_TOKEN:
-                fallback_model = (
-                    HUGGINGFACE_INFERENCE_MODEL
-                    if model_name == DEFAULT_LLM_MODEL
-                    else model_name
-                )
-                logger.info(
-                    "load_llm_fallback_hf",
-                    extra={
-                        "fallback_model": fallback_model,
-                        "reason": "gemini_dependency_missing",
-                    },
-                )
-                return HuggingFaceInferenceLLM(
-                    model_name=fallback_model,
-                    api_token=HUGGINGFACE_API_TOKEN,
-                    generation_kwargs=GENERATION_KWARGS,
-                )
-            raise RuntimeError(
-                "Gemini backend requires the 'google-generativeai' package. Install it via requirements.txt "
-                "or set AUTO_ANALYST_LLM_BACKEND=huggingface."
-            ) from exc
-    if backend in {"huggingface", "hf", "hf_inference", "huggingface_inference"}:
-        configured_model = (
-            HUGGINGFACE_INFERENCE_MODEL
-            if model_name == DEFAULT_LLM_MODEL
-            else model_name
-        )
-        logger.info(
-            "load_llm_hf_inference_start",
-            extra={
-                "model_name": configured_model,
-                "generation_kwargs": GENERATION_KWARGS,
-            },
-        )
-        return HuggingFaceInferenceLLM(
-            model_name=configured_model,
-            api_token=HUGGINGFACE_API_TOKEN,
-            generation_kwargs=GENERATION_KWARGS,
-        )
+            logger.warning("load_llm_gemini_dependency_missing")
+            if primary_fallback:
+                return primary_fallback
+            raise
 
-    raise ValueError(
-        "Unsupported AUTO_ANALYST_LLM_BACKEND. Supported values: 'gemini', 'huggingface'."
-    )
+    if backend == "groq":
+        if not groq_llm:
+            raise ValueError("GROQ_API_KEY not configured but requested as primary backend.")
+        return groq_llm
+
+    if backend in {"huggingface", "hf", "hf_inference"}:
+        if not hf_fallback:
+            raise ValueError("HUGGINGFACE_API_TOKEN not configured but requested as primary backend.")
+        return hf_fallback
+
+    raise ValueError(f"Unsupported LLM_BACKEND: {backend}")

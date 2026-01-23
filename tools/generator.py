@@ -22,17 +22,19 @@ QUERY_TYPE_CREATIVE = "creative"
 # PROMPT TEMPLATES BY QUERY TYPE
 # =============================================================================
 
-PROMPT_FACTUAL = """You are an evidence-based research assistant. Using only the context provided, \
-write a comprehensive, well-structured answer to the user question.
+PROMPT_FACTUAL = """You are a highly capable, evidence-based research assistant. Using the context provided, \
+write a sophisticated, well-structured, and comprehensive answer to the user question.
 
 Guidelines:
-- Organize your response with clear sections using **bold headers** when appropriate
-- Provide detailed explanations, not just brief summaries
-- Use bullet points or numbered lists to present multiple items clearly
+- Aim for a professional, analytical tone
+- Organize your response with clear sections using **bold headers**
+- Provide deep, detailed explanations rather than surface-level summaries
+- Use bullet points or numbered lists to present complex information clearly
 {list_instruction}\
-- Cite supporting evidence inline using [n] where n matches the numbered context entries
-- Include relevant details like dates, names, descriptions when available
-- Do not fabricate details - only use information from the provided context
+- Support every claim with inline citations [n] using the context entries
+- Be specific: include dates, names, figures, and technical details from the sources
+- If sources disagree, mention the different perspectives
+- Do not fabricate information; stay strictly within the context provided
 
 {context_instruction}User question: {query}
 
@@ -41,25 +43,26 @@ Context:
 
 Answer:"""
 
-PROMPT_RECOMMENDATION = """You are a knowledgeable assistant providing recommendations. \
-Use the search results as a reference, but also draw on your broader knowledge to give \
-helpful, personalized suggestions.
+PROMPT_RECOMMENDATION = """You are an expert advisor providing curated recommendations. \
+Examine the search results thoroughly and combine them with your extensive latent knowledge \
+to provide high-quality, insightful suggestions.
 
 Guidelines:
-- Provide specific, actionable recommendations (names, titles, etc.)
-- Explain WHY you're recommending each item
-- Organize with bullet points or numbered lists
+- Provide specific, actionable recommendations with descriptive detail
+- For each recommendation, explain the reasoning and why it's a good fit
+- Use **bold headers** for each recommendation section
+- Utilize bullet points for features, pros/cons, or additional details
 {list_instruction}\
-- Use [n] citations when a recommendation comes directly from the search results
-- Feel free to add recommendations from your knowledge even if not in the sources
-- Be conversational and helpful
+- Use [n] citations whenever a detail or specific item is found in the search results
+- Add your own expert perspective to add value beyond the raw search data
+- Ensure the response is engaging, detailed, and worth reading
 
 {context_instruction}User question: {query}
 
-Reference context (use as starting point, not limitation):
+Reference context (use as primary evidence):
 {context_block}
 
-Recommendations:"""
+Detailed Recommendations:"""
 
 PROMPT_CREATIVE = """You are a helpful assistant answering a creative or open-ended question. \
 Use the provided context for reference and inspiration, but feel free to provide \
@@ -89,7 +92,7 @@ PROMPT_TEMPLATES = {
 # Response delimiters for stripping prompt echoes
 RESPONSE_DELIMITERS = {
     QUERY_TYPE_FACTUAL: "Answer:",
-    QUERY_TYPE_RECOMMENDATION: "Recommendations:",
+    QUERY_TYPE_RECOMMENDATION: "Detailed Recommendations:",
     QUERY_TYPE_CREATIVE: "Response:",
 }
 
@@ -169,15 +172,20 @@ def _is_coherent(
     if alnum_ratio < min_alnum_ratio:
         return False
 
-    # Check for repeated fragments (like "Bun" appearing many times)
     # If any 3+ letter word appears more than max_word_repeat times, likely gibberish
+    # But allow for technical terms that might repeat naturally in large blocks
     for word, count in word_counts.items():
         if len(word) >= 3 and count > max_word_repeat:
+            # Check if it's a very common English word or obviously legitimate
+            if word in {"the", "and", "that", "this", "with", "from", "anime", "release"}:
+                if count > max_word_repeat * 2:
+                    return False
+                continue
             return False
 
     # Check for nonsensical number/letter combinations
     nonsense_patterns = re.findall(r"[a-z]+\d+[a-z]*|\d+[a-z]+\d*", text.lower())
-    if len(nonsense_patterns) > 5:
+    if len(nonsense_patterns) > 10:  # Relaxed from 5
         return False
 
     return True
