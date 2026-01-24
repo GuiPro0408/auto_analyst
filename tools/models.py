@@ -479,6 +479,10 @@ def load_llm(model_name: str = DEFAULT_LLM_MODEL):
             raise ValueError(
                 "GROQ_API_KEY not configured but requested as primary backend."
             )
+        # Configure HuggingFace as fallback for Groq rate limits
+        if hf_fallback:
+            groq_llm.set_fallback(hf_fallback)
+            logger.info("load_llm_groq_with_hf_fallback")
         return groq_llm
 
     if backend in {"huggingface", "hf", "hf_inference"}:

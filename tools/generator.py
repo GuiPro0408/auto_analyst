@@ -429,12 +429,18 @@ def _strip_references_section(text: str) -> str:
     The UI displays citations separately, so we strip any references the LLM
     adds to avoid duplication.
     """
-    # Common patterns for references sections
+    # Common patterns for references sections (order matters - more specific first)
     patterns = [
-        r"\n+\*?\*?References:?\*?\*?\s*\n[\s\S]*$",  # **References:** or References:
-        r"\n+\*?\*?Sources:?\*?\*?\s*\n[\s\S]*$",  # **Sources:** or Sources:
-        r"\n+\*?\*?Citations:?\*?\*?\s*\n[\s\S]*$",  # **Citations:** or Citations:
-        r"\n+---+\s*\n\s*\[\d+\][\s\S]*$",  # --- followed by [1]...
+        # Markdown headers: ### References, ## Sources, etc.
+        r"\n+#{1,6}\s*References\s*\n[\s\S]*$",
+        r"\n+#{1,6}\s*Sources\s*\n[\s\S]*$",
+        r"\n+#{1,6}\s*Citations\s*\n[\s\S]*$",
+        # Bold or plain text: **References:** or References:
+        r"\n+\*?\*?References:?\*?\*?\s*\n[\s\S]*$",
+        r"\n+\*?\*?Sources:?\*?\*?\s*\n[\s\S]*$",
+        r"\n+\*?\*?Citations:?\*?\*?\s*\n[\s\S]*$",
+        # Horizontal rule followed by citations: --- \n [1]...
+        r"\n+---+\s*\n\s*\[\d+\][\s\S]*$",
     ]
 
     result = text
