@@ -317,6 +317,7 @@ class HuggingFaceInferenceLLM:
         client: Optional[InferenceClient] = None,
         retries: int = 2,
         backoff_seconds: float = LLM_BACKOFF_SECONDS,
+        fallback_llm: Optional[Any] = None,
     ) -> None:
         if not api_token:
             raise ValueError(
@@ -329,6 +330,7 @@ class HuggingFaceInferenceLLM:
         self._client = client or InferenceClient(model=model_name, token=api_token)
         self._retries = max(1, retries)
         self._backoff_seconds = max(0.0, backoff_seconds)
+        self._fallback_llm = fallback_llm
         self.logger.info(
             "hf_inference_llm_initialized",
             extra={
@@ -336,7 +338,16 @@ class HuggingFaceInferenceLLM:
                 "generation_kwargs": self._generation_kwargs,
                 "retries": self._retries,
                 "backoff_seconds": self._backoff_seconds,
+                "has_fallback": fallback_llm is not None,
             },
+        )
+
+    def set_fallback(self, fallback_llm: Any) -> None:
+        """Set a fallback LLM for when HF API fails."""
+        self._fallback_llm = fallback_llm
+        self.logger.info(
+            "hf_inference_fallback_configured",
+            extra={"fallback_type": type(fallback_llm).__name__},
         )
 
     @staticmethod
@@ -396,11 +407,21 @@ class HuggingFaceInferenceLLM:
                         "attempts": self._retries,
                     },
                 )
+                # Try fallback (local LLM) if available
+                if self._fallback_llm is not None:
+                    self.logger.warning(
+                        "hf_inference_using_local_fallback",
+                        extra={"fallback_type": type(self._fallback_llm).__name__},
+                    )
+                    return self._fallback_llm(prompt)
                 raise RuntimeError(
                     f"HuggingFace Inference API call failed after {self._retries} attempts: {exc}"
                 ) from exc
 
         # This should be unreachable, but satisfies type checker
+        if self._fallback_llm is not None:
+            self.logger.warning("hf_inference_using_local_fallback_final")
+            return self._fallback_llm(prompt)
         raise RuntimeError(
             f"HuggingFace Inference API call failed after {self._retries} attempts: {last_error}"
         )
@@ -519,11 +540,14 @@ class LocalLlamaCppLLM:
 def load_llm(model_name: str = DEFAULT_LLM_MODEL):
     """Load an LLM via cloud API or local llama.cpp backend.
 
-    Priority order for fallback (cloud only): Gemini -> Groq -> HuggingFace.
+    Priority order for fallback: Gemini -> Groq -> HuggingFace -> Local (if configured).
     """
     logger = get_logger(__name__)
 
     backend = LLM_BACKEND.lower()
+
+    # Check if local LLM is available for fallback
+    local_available = bool(LOCAL_LLM_MODEL_PATH)
 
     if backend in {"local", "llama_cpp", "llamacpp"}:
         resolved_model_path = (
@@ -544,7 +568,22 @@ def load_llm(model_name: str = DEFAULT_LLM_MODEL):
             n_threads=LOCAL_LLM_N_THREADS,
         )
 
-    # Prepare fallbacks
+    # Prepare local LLM as ultimate fallback (slow but always available)
+    local_fallback = None
+    if local_available:
+        try:
+            local_fallback = LocalLlamaCppLLM(
+                model_path=LOCAL_LLM_MODEL_PATH,
+                generation_kwargs=GENERATION_KWARGS,
+                n_ctx=LOCAL_LLM_N_CTX,
+                n_gpu_layers=LOCAL_LLM_N_GPU_LAYERS,
+                n_threads=LOCAL_LLM_N_THREADS,
+            )
+            logger.info("load_llm_local_fallback_ready")
+        except Exception as e:
+            logger.warning("load_llm_local_fallback_failed", extra={"error": str(e)})
+
+    # Prepare cloud fallbacks
     groq_llm = None
     if GROQ_API_KEY:
         try:
@@ -573,13 +612,14 @@ def load_llm(model_name: str = DEFAULT_LLM_MODEL):
                 model_name=hf_model,
                 api_token=HUGGINGFACE_API_TOKEN,
                 generation_kwargs=GENERATION_KWARGS,
+                fallback_llm=local_fallback,  # Local as final fallback
             )
             logger.info("load_llm_hf_ready")
         except Exception as exc:
             logger.warning("load_llm_hf_init_failed", extra={"error": str(exc)})
 
-    # Chain fallbacks: Gemini -> Groq -> HF
-    primary_fallback = groq_llm or hf_fallback
+    # Chain fallbacks: Gemini -> Groq -> HF -> Local
+    primary_fallback = groq_llm or hf_fallback or local_fallback
 
     if backend == "gemini":
         configured_model = (
@@ -611,10 +651,13 @@ def load_llm(model_name: str = DEFAULT_LLM_MODEL):
             raise ValueError(
                 "GROQ_API_KEY not configured but requested as primary backend."
             )
-        # Configure HuggingFace as fallback for Groq rate limits
+        # Configure fallback chain: HuggingFace -> Local
         if hf_fallback:
             groq_llm.set_fallback(hf_fallback)
             logger.info("load_llm_groq_with_hf_fallback")
+        elif local_fallback:
+            groq_llm.set_fallback(local_fallback)
+            logger.info("load_llm_groq_with_local_fallback")
         return groq_llm
 
     if backend in {"huggingface", "hf", "hf_inference"}:
