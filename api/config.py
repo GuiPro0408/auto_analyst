@@ -158,8 +158,10 @@ ANSWER_PREVIEW_MAX_LEN = int(os.getenv("AUTO_ANALYST_ANSWER_PREVIEW_MAX_LEN", "2
 # =============================================================================
 # ADAPTIVE RESEARCH CONFIGURATION
 # =============================================================================
+# Lowered from 0.3 to 0.2 to be more permissive with retrieved context
+# This reduces unnecessary adaptive search iterations for borderline relevance
 MIN_RELEVANCE_THRESHOLD = float(
-    os.getenv("AUTO_ANALYST_MIN_RELEVANCE_THRESHOLD", "0.3")
+    os.getenv("AUTO_ANALYST_MIN_RELEVANCE_THRESHOLD", "0.2")
 )
 
 # =============================================================================

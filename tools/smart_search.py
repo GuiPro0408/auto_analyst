@@ -13,7 +13,25 @@ from tools.search import run_search_tasks
 
 QUERY_ANALYSIS_PROMPT = """Analyze this search query and provide a strategy.\n\nQuery: {query}\n\nRespond in JSON only (no markdown):\n{{\n  \"intent\": \"news|factual|comparison|howto|opinion\",\n  \"entities\": [\"entity1\", \"entity2\"],\n  \"topic\": \"technology|science|sports|entertainment|news|finance|health|general\",\n  \"time_sensitivity\": \"realtime|recent|any\",\n  \"suggested_searches\": [\n    {{\"query\": \"specific search 1\", \"rationale\": \"why\"}},\n    {{\"query\": \"specific search 2\", \"rationale\": \"why\"}}\n  ],\n  \"authoritative_sources\": [\"domain1.com\", \"domain2.com\"]\n}}"""
 
-RESULT_VALIDATION_PROMPT = """Given the user query, determine which search results are relevant.\n\nUser Query: {query}\n\nSearch Results:\n{results_text}\n\nReturn ONLY a JSON array of relevant result numbers (1-indexed).\nExample: [1, 3, 5, 7]\n\nIf none are relevant, return: []"""
+RESULT_VALIDATION_PROMPT = """Given the user query, determine which search results are potentially useful.
+
+User Query: {query}
+
+Search Results:
+{results_text}
+
+Be LENIENT - include any result that is even somewhat related to the query topic.
+Include results that:
+- Mention any entity, concept, or keyword from the query
+- Could provide background information or context
+- Discuss related topics that might be useful
+
+Only exclude results that are completely unrelated (e.g., spam, totally different subjects).
+
+Return ONLY a JSON array of useful result numbers (1-indexed).
+Example: [1, 2, 3, 4, 5]
+
+If ALL results are completely off-topic, return: []"""
 
 
 def _extract_json_payload(text: str) -> str:
@@ -164,6 +182,12 @@ def smart_search(
 
     include_domains = analysis.get("authoritative_sources", [])
 
+    # NOTE: Disabled domain filtering - LLM suggestions are often too narrow
+    # and cause Tavily to return poor/no results. Let Tavily's own relevance
+    # ranking do the filtering instead.
+    # If results are consistently bad, consider re-enabling with a curated
+    # list of known-good domains instead of LLM suggestions.
+
     from tools.search import TavilyBackend
 
     tavily = TavilyBackend()
@@ -172,7 +196,7 @@ def smart_search(
         max_results=max_results,
         topic=tavily_topic,
         time_range=time_range,
-        include_domains=include_domains if include_domains else None,
+        include_domains=None,  # Disabled - see note above
         run_id=run_id,
     )
     tavily_results = tavily_result_tuple[0]

@@ -60,9 +60,6 @@ class ChromaVectorStore(VectorStore):
             embedding_function=cast(EmbeddingFunction[Embeddable], self.embedding_fn),
             metadata={"hnsw:space": "cosine"},
         )
-        logger.debug(
-            "chroma_collection_available", extra={"collection": self.collection_name}
-        )
         return collection
 
     def clear(self) -> None:

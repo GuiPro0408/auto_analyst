@@ -174,11 +174,58 @@ def _is_coherent(
 
     # If any 3+ letter word appears more than max_word_repeat times, likely gibberish
     # But allow for technical terms that might repeat naturally in large blocks
+    # Extended allowlist for technical/AI content that legitimately repeats terms
+    technical_allowlist = {
+        # Common English words
+        "the",
+        "and",
+        "that",
+        "this",
+        "with",
+        "from",
+        "for",
+        "are",
+        "can",
+        "has",
+        # AI/ML model names and terms (these repeat in comparison queries)
+        "model",
+        "models",
+        "gemini",
+        "claude",
+        "gpt",
+        "flash",
+        "sonnet",
+        "opus",
+        "llm",
+        "llms",
+        "token",
+        "tokens",
+        "benchmark",
+        "performance",
+        "latency",
+        # Technical terms
+        "api",
+        "data",
+        "code",
+        "test",
+        "context",
+        "output",
+        "input",
+        "response",
+        # Media/entertainment terms
+        "anime",
+        "release",
+        "season",
+        "episode",
+        "series",
+        "movie",
+        "game",
+    }
     for word, count in word_counts.items():
         if len(word) >= 3 and count > max_word_repeat:
-            # Check if it's a very common English word or obviously legitimate
-            if word in {"the", "and", "that", "this", "with", "from", "anime", "release"}:
-                if count > max_word_repeat * 2:
+            # Check if it's an allowed term that can repeat more frequently
+            if word in technical_allowlist:
+                if count > max_word_repeat * 3:  # Allow 3x more for technical terms
                     return False
                 continue
             return False
@@ -277,15 +324,6 @@ def generate_answer(
         # This handles cases where the query is very short or generic
         if overlap or not query_keywords:
             relevant_chunks.append(chunk)
-            logger.debug(
-                "generate_chunk_relevant",
-                extra={"chunk_id": chunk.id, "overlap_count": len(overlap)},
-            )
-        else:
-            logger.debug(
-                "generate_chunk_filtered",
-                extra={"chunk_id": chunk.id, "reason": "no_keyword_overlap"},
-            )
 
     logger.info(
         "generate_chunks_filtered",
@@ -356,7 +394,7 @@ def generate_answer(
     output = llm(prompt)[0]["generated_text"]
     logger.debug(
         "generate_llm_response",
-        extra={"output_length": len(output), "output_preview": output[:200]},
+        extra={"output_length": len(output)},
     )
     # Strip prompt echo if present
     answer = (
@@ -365,19 +403,17 @@ def generate_answer(
         else output.strip()
     )
 
-    # Check if the generated answer is coherent
-    is_coherent = _is_coherent(answer)
+    # NOTE: Coherence check disabled - Tavily provides high-quality context,
+    # and the fallback templates produce worse output ("See sources below").
+    # The LLM output with good context is preferable even if slightly imperfect.
+    # If quality issues arise, improve the prompt rather than falling back.
     logger.debug(
-        "generate_coherence_check",
-        extra={"is_coherent": is_coherent, "answer_length": len(answer)},
+        "generate_coherence_check_skipped",
+        extra={"answer_length": len(answer)},
     )
-    if not is_coherent:
-        # Provide a structured fallback using the retrieved information
-        logger.warning(
-            "generate_incoherent_answer",
-            extra={"answer_preview": answer[:100], "falling_back": True},
-        )
-        answer = _generate_fallback_answer(query, relevant_chunks)
+
+    # Strip LLM-generated references section (UI displays citations separately)
+    answer = _strip_references_section(answer)
 
     answer, citations = build_citations(relevant_chunks, answer)
     logger.info(
@@ -385,6 +421,27 @@ def generate_answer(
         extra={"answer_length": len(answer), "citations": len(citations)},
     )
     return answer, citations
+
+
+def _strip_references_section(text: str) -> str:
+    """Remove LLM-generated References/Sources sections from the answer.
+
+    The UI displays citations separately, so we strip any references the LLM
+    adds to avoid duplication.
+    """
+    # Common patterns for references sections
+    patterns = [
+        r"\n+\*?\*?References:?\*?\*?\s*\n[\s\S]*$",  # **References:** or References:
+        r"\n+\*?\*?Sources:?\*?\*?\s*\n[\s\S]*$",  # **Sources:** or Sources:
+        r"\n+\*?\*?Citations:?\*?\*?\s*\n[\s\S]*$",  # **Citations:** or Citations:
+        r"\n+---+\s*\n\s*\[\d+\][\s\S]*$",  # --- followed by [1]...
+    ]
+
+    result = text
+    for pattern in patterns:
+        result = re.sub(pattern, "", result, flags=re.IGNORECASE)
+
+    return result.rstrip()
 
 
 def _clean_snippet(text: str, max_len: int = 300) -> str:
@@ -528,6 +585,125 @@ def _extract_key_items(chunks: List[Chunk]) -> List[str]:
     return list(items)[:10]
 
 
+def _is_comparison_query(query: str) -> bool:
+    """Detect if query is asking for a comparison between items."""
+    query_lower = query.lower()
+    comparison_keywords = [
+        "compare",
+        "comparison",
+        "vs",
+        "versus",
+        "difference",
+        "differences",
+        "better",
+        "which is",
+        "pros and cons",
+        "advantages",
+        "disadvantages",
+    ]
+    return any(kw in query_lower for kw in comparison_keywords)
+
+
+def _generate_comparison_fallback(query: str, chunks: List[Chunk]) -> str:
+    """Generate a comparison-focused fallback answer with table format."""
+    # Extract entities being compared from query and chunks
+    entities: List[str] = []
+    query_lower = query.lower()
+
+    # Common AI model names to detect
+    model_names = [
+        "gemini",
+        "gpt-4",
+        "gpt-4o",
+        "gpt4",
+        "claude",
+        "sonnet",
+        "opus",
+        "haiku",
+        "llama",
+        "mistral",
+        "palm",
+        "bard",
+        "copilot",
+        "chatgpt",
+        "flash",
+    ]
+    for model in model_names:
+        if model in query_lower:
+            # Capitalize properly
+            if model == "gpt-4" or model == "gpt-4o" or model == "gpt4":
+                entities.append("GPT-4o")
+            elif model == "gemini" or model == "flash":
+                entities.append("Gemini 2.0 Flash")
+            elif model == "claude" or model == "sonnet":
+                entities.append("Claude 3.5 Sonnet")
+            elif model == "opus":
+                entities.append("Claude Opus")
+            else:
+                entities.append(model.title())
+
+    # Deduplicate
+    entities = list(dict.fromkeys(entities))[:4]
+
+    lines = []
+    lines.append(f"**Comparison Summary**\n")
+    lines.append(f"Query: *{query}*\n\n")
+
+    if len(entities) >= 2:
+        # Build comparison table header
+        lines.append("| Aspect | " + " | ".join(entities) + " |\n")
+        lines.append("|" + "---|" * (len(entities) + 1) + "\n")
+
+        # Add placeholder rows based on common comparison aspects
+        aspects = ["Performance", "Speed/Latency", "Cost", "Context Window", "Best For"]
+        for aspect in aspects:
+            row = f"| {aspect} |"
+            for _ in entities:
+                row += " See sources below |"
+            lines.append(row + "\n")
+        lines.append("\n")
+
+    lines.append("### Key Information from Sources\n\n")
+
+    seen_sources = set()
+    source_count = 0
+
+    for chunk in chunks[:6]:
+        meta = chunk.metadata or {}
+        title = meta.get("title", "Source")
+        url = meta.get("url", "")
+
+        source_key = url or title
+        if source_key in seen_sources:
+            continue
+        seen_sources.add(source_key)
+        source_count += 1
+
+        snippet = _clean_snippet(chunk.text or "", max_len=250)
+        if not snippet or len(snippet) < 20:
+            continue
+
+        lines.append(f"**{source_count}. {title}**\n")
+        lines.append(f"> {snippet}\n")
+        if url:
+            lines.append(f"[Read more]({url})\n")
+        lines.append("\n")
+
+    if source_count == 0:
+        return (
+            "I found some comparison sources but couldn't extract meaningful content. "
+            "Please check the linked sources for detailed comparisons."
+        )
+
+    lines.append("---\n")
+    lines.append(
+        "*This comparison summary was generated from retrieved sources. "
+        "For detailed benchmarks and analysis, please visit the linked sources.*"
+    )
+
+    return "".join(lines)
+
+
 def _generate_fallback_answer(query: str, chunks: List[Chunk]) -> str:
     """Generate a structured, readable answer when LLM is unavailable."""
     if not chunks:
@@ -535,6 +711,10 @@ def _generate_fallback_answer(query: str, chunks: List[Chunk]) -> str:
             "I couldn't find sufficient information to answer your question. "
             "Please try rephrasing or being more specific."
         )
+
+    # Check for comparison queries first - use specialized format
+    if _is_comparison_query(query):
+        return _generate_comparison_fallback(query, chunks)
 
     # Determine if this looks like a recommendation query
     is_recommendation = any(
@@ -626,10 +806,9 @@ def verify_answer(
         logger.debug("verify_skip_fallback_message")
         return draft
 
-    # If draft is incoherent, return it as-is (it's already a fallback)
-    if not _is_coherent(draft):
-        logger.warning("verify_draft_incoherent", extra={"generating_fallback": True})
-        return _generate_fallback_answer(query, retrieved)
+    # NOTE: Draft coherence check disabled - if draft got through generate_answer,
+    # we trust it and proceed with verification.
+    logger.debug("verify_draft_coherence_skipped")
 
     context_block = _format_context(retrieved)
     logger.debug(
@@ -666,15 +845,13 @@ def verify_answer(
         else output.strip()
     )
 
-    # Check if verification made things worse
-    is_coherent = _is_coherent(verified)
+    # NOTE: Verification coherence check disabled - LLM verification with good
+    # Tavily context should produce usable output. If not, we still prefer
+    # the verified output over reverting to draft (which may have citation issues).
     logger.debug(
-        "verify_coherence_check",
-        extra={"is_coherent": is_coherent, "verified_length": len(verified)},
+        "verify_coherence_check_skipped",
+        extra={"verified_length": len(verified)},
     )
-    if not is_coherent:
-        logger.warning("verify_result_incoherent", extra={"returning": "draft"})
-        return draft  # Return original draft if verification produced gibberish
 
     logger.info(
         "verify_answer_complete",

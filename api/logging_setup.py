@@ -53,17 +53,37 @@ def _configure_root() -> None:
                         setattr(record, field, "[REDACTED]")
             return True
 
+    class _NoiseFilter(logging.Filter):
+        """Filter out noisy third-party loggers that clutter logs."""
+
+        NOISY_LOGGERS = (
+            "watchdog.observers.inotify_buffer",
+            "watchdog.observers",
+            "urllib3.connectionpool",
+            "httpcore",
+            "httpx",
+        )
+
+        def filter(self, record: logging.LogRecord) -> bool:
+            # Suppress DEBUG logs from noisy third-party libraries
+            if record.name.startswith(self.NOISY_LOGGERS):
+                return record.levelno >= logging.WARNING
+            return True
+
     redact_filter = _RedactFilter()
+    noise_filter = _NoiseFilter()
 
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(formatter)
     handler.addFilter(redact_filter)
+    handler.addFilter(noise_filter)
     handlers = [handler]
 
     if config.LOG_FILE_PATH:
         file_handler = logging.FileHandler(config.LOG_FILE_PATH)
         file_handler.setFormatter(formatter)
         file_handler.addFilter(redact_filter)
+        file_handler.addFilter(noise_filter)
         handlers.append(file_handler)
 
     logging.basicConfig(level=level, handlers=handlers)
@@ -114,17 +134,36 @@ def configure_logging(
                         setattr(record, field, "[REDACTED]")
             return True
 
+    class _NoiseFilter(logging.Filter):
+        """Filter out noisy third-party loggers that clutter logs."""
+
+        NOISY_LOGGERS = (
+            "watchdog.observers.inotify_buffer",
+            "watchdog.observers",
+            "urllib3.connectionpool",
+            "httpcore",
+            "httpx",
+        )
+
+        def filter(self, record: logging.LogRecord) -> bool:
+            if record.name.startswith(self.NOISY_LOGGERS):
+                return record.levelno >= logging.WARNING
+            return True
+
     redact_filter = _RedactFilter()
+    noise_filter = _NoiseFilter()
 
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(formatter)
     handler.addFilter(redact_filter)
+    handler.addFilter(noise_filter)
     handlers = [handler]
 
     if effective_file:
         file_handler = logging.FileHandler(effective_file)
         file_handler.setFormatter(formatter)
         file_handler.addFilter(redact_filter)
+        file_handler.addFilter(noise_filter)
         handlers.append(file_handler)
 
     logging.basicConfig(level=effective_level, handlers=handlers, force=True)

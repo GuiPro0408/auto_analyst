@@ -38,8 +38,8 @@ class TestAssessContext:
             Chunk(id="1", text="chunk 1", metadata={}),
             Chunk(id="2", text="chunk 2", metadata={}),
         ]
-        # MIN_RELEVANCE_THRESHOLD is 0.3, so avg of 0.2 should trigger
-        scores = [0.2, 0.2]
+        # MIN_RELEVANCE_THRESHOLD is 0.2, so avg of 0.15 should trigger
+        scores = [0.15, 0.15]
         needs_more, warnings = assess_context(
             retrieved=chunks, min_chunks=1, scores=scores
         )

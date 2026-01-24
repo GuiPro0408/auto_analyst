@@ -64,9 +64,9 @@ class GeminiGroundingBackend(SearchBackend):
         """
         logger = get_logger(__name__, run_id=run_id)
         warnings: List[str] = []
-        logger.debug(
+        logger.info(
             "gemini_grounding_search_start",
-            extra={"query": query, "max_results": max_results},
+            extra={"query": query[:100], "max_results": max_results},
         )
 
         result: GroundingResult = query_with_grounding(query, run_id=run_id)
@@ -163,6 +163,17 @@ class TavilyBackend(SearchBackend):
             payload["time_range"] = time_range
         if include_domains:
             payload["include_domains"] = include_domains[:300]
+
+        logger.info(
+            "tavily_search_start",
+            extra={
+                "query": query[:100],
+                "max_results": max_results,
+                "topic": topic,
+                "include_domains": include_domains[:5] if include_domains else None,
+                "time_range": time_range,
+            },
+        )
 
         try:
             resp = requests.post(

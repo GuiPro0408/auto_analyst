@@ -51,10 +51,6 @@ def is_allowed(url: str, run_id: Optional[str] = None) -> bool:
     with _robots_lock:
         cached = _robots_cache.get(domain)
         if cached and (now - cached[1]) < ROBOTS_CACHE_TTL_SECONDS:
-            logger.debug(
-                "robots_cache_hit",
-                extra={"url": url, "domain": domain, "allowed": cached[0]},
-            )
             return cached[0]
 
     rp = RobotFileParser()

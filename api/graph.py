@@ -116,7 +116,6 @@ def build_workflow(
                     "tasks": len(plan),
                     "duration_ms": (perf_counter() - start) * 1000,
                     "query": query_text,
-                    "task_queries": [t.text for t in plan],
                     "time_sensitive": time_sensitive,
                     "history_context": bool(context_summary),
                 },
@@ -138,7 +137,6 @@ def build_workflow(
             "search_start",
             extra={
                 "tasks": len(plan),
-                "task_queries": [t.text for t in plan],
                 "query": query,
                 "resolved_query_differs": effective_query != query,
             },
@@ -656,11 +654,21 @@ def build_workflow(
                 f"pass {qc_passes}: issues={assessment['issues']}"
             ]
             if assessment["is_good_enough"] or qc_passes >= QC_MAX_PASSES:
+                status = "accepted" if assessment["is_good_enough"] else "max_iterations_reached"
+                if qc_passes >= QC_MAX_PASSES and not assessment["is_good_enough"]:
+                    log.warning(
+                        "qc_max_iterations_reached",
+                        extra={
+                            "qc_passes": qc_passes,
+                            "max_passes": QC_MAX_PASSES,
+                            "issues": assessment["issues"],
+                        },
+                    )
                 log.info(
                     "qc_complete",
                     extra={
                         "qc_passes": qc_passes,
-                        "status": "accepted",
+                        "status": status,
                         "issues": assessment["issues"],
                         "duration_ms": (perf_counter() - start) * 1000,
                     },

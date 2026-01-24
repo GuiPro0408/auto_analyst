@@ -76,10 +76,6 @@ def _extract_grounding_sources(
             title = getattr(web, "title", "") or ""
             if url:
                 sources.append(GroundingSource(url=url, title=title, snippet=""))
-                logger.debug(
-                    "grounding_source_extracted",
-                    extra={"url": url, "title": title[:50] if title else ""},
-                )
 
     # Extract web search queries used by Gemini
     search_queries = getattr(grounding_metadata, "web_search_queries", None) or []
@@ -183,7 +179,6 @@ def query_with_grounding(
     # Configure Google Search grounding tool (new API for Gemini 2.0+)
     try:
         google_search_tool = types.Tool(google_search=types.GoogleSearch())
-        logger.debug("grounding_tool_created")
     except Exception as exc:
         logger.error("grounding_tool_creation_failed", extra={"error": str(exc)})
         return GroundingResult(
