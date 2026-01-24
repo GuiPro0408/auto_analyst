@@ -1,7 +1,8 @@
 """ChromaDB-backed vector store."""
 
+import logging
 from pathlib import Path
-from typing import List, Optional, cast
+from typing import List, Optional, Union, cast
 
 import chromadb
 from chromadb.api.types import EmbeddingFunction, Embeddable
@@ -13,12 +14,17 @@ from api.logging_setup import get_logger
 from api.state import Chunk
 from vector_store.base import ScoredChunk, VectorStore
 
+# Metadata key for tracking embedding model version
+_MODEL_VERSION_KEY = "embedding_model"
+
 
 class ChromaVectorStore(VectorStore):
     """ChromaDB-backed vector store with persistent storage.
 
     Uses run-isolated collections when run_id is provided to prevent
     cross-contamination between concurrent runs.
+
+    Tracks embedding model version and auto-clears collection if model changes.
     """
 
     def __init__(
@@ -35,6 +41,7 @@ class ChromaVectorStore(VectorStore):
             f"{collection_name}-{run_id}" if run_id else collection_name
         )
         self.run_id = run_id
+        self._model_name = model_name
         logger.info(
             "chroma_store_init",
             extra={
@@ -51,14 +58,49 @@ class ChromaVectorStore(VectorStore):
             model_name=model_name
         )
         self.collection = self._get_or_create_collection()
+
+        # Check for model version mismatch and clear if needed
+        self._check_model_version(logger)
         logger.debug("chroma_store_ready")
+
+    def _check_model_version(
+        self, logger: Union[logging.Logger, logging.LoggerAdapter]
+    ) -> None:
+        """Check if collection was created with different embedding model and clear if so."""
+        try:
+            collection_metadata = self.collection.metadata or {}
+            stored_model = collection_metadata.get(_MODEL_VERSION_KEY)
+
+            if stored_model and stored_model != self._model_name:
+                logger.warning(
+                    "chroma_model_mismatch_clearing",
+                    extra={
+                        "stored_model": stored_model,
+                        "new_model": self._model_name,
+                        "collection": self.collection_name,
+                    },
+                )
+                # Clear and recreate with new model
+                self.clear()
+                logger.info(
+                    "chroma_collection_cleared_for_new_model",
+                    extra={"new_model": self._model_name},
+                )
+        except Exception as exc:
+            logger.debug(
+                "chroma_model_version_check_failed",
+                extra={"error": str(exc)},
+            )
 
     def _get_or_create_collection(self):
         logger = get_logger(__name__, run_id=self.run_id)
         collection = self.client.get_or_create_collection(
             name=self.collection_name,
             embedding_function=cast(EmbeddingFunction[Embeddable], self.embedding_fn),
-            metadata={"hnsw:space": "cosine"},
+            metadata={
+                "hnsw:space": "cosine",
+                _MODEL_VERSION_KEY: self._model_name,
+            },
         )
         return collection
 

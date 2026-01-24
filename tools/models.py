@@ -2,7 +2,7 @@
 
 from functools import lru_cache
 from time import perf_counter, sleep
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 from huggingface_hub import InferenceClient
 from sentence_transformers import SentenceTransformer
@@ -19,6 +19,11 @@ from api.config import (
     HUGGINGFACE_INFERENCE_MODEL,
     LLM_BACKEND,
     LLM_BACKOFF_SECONDS,
+    LOCAL_LLM_MODEL_PATH,
+    LOCAL_LLM_MAX_NEW_TOKENS,
+    LOCAL_LLM_N_CTX,
+    LOCAL_LLM_N_GPU_LAYERS,
+    LOCAL_LLM_N_THREADS,
 )
 from api.key_rotator import APIKeyRotator, get_default_rotator
 from api.logging_setup import get_logger
@@ -401,16 +406,143 @@ class HuggingFaceInferenceLLM:
         )
 
 
+class LocalLlamaCppLLM:
+    """Callable wrapper for local llama.cpp GGUF models."""
+
+    def __init__(
+        self,
+        model_path: str,
+        generation_kwargs: Dict[str, Any],
+        n_ctx: int = LOCAL_LLM_N_CTX,
+        n_gpu_layers: int = LOCAL_LLM_N_GPU_LAYERS,
+        n_threads: int = LOCAL_LLM_N_THREADS,
+    ) -> None:
+        if not model_path:
+            raise ValueError(
+                "AUTO_ANALYST_LOCAL_MODEL_PATH is not set. Please configure it in your environment or .env file."
+            )
+
+        try:
+            from llama_cpp import Llama  # pylint: disable=import-error
+        except ImportError as exc:  # pragma: no cover - dependency issue
+            raise ImportError(
+                "llama-cpp-python is required for the local LLM backend. Install it via requirements.txt."
+            ) from exc
+
+        self.logger = get_logger(__name__)
+        self._model_path = model_path
+        self._generation_kwargs = self._map_generation_kwargs(generation_kwargs)
+        self._n_ctx = n_ctx
+        self._n_gpu_layers = n_gpu_layers
+        self._n_threads = n_threads
+        self._model = Llama(
+            model_path=model_path,
+            n_ctx=n_ctx,
+            n_gpu_layers=n_gpu_layers,
+            n_threads=n_threads,
+        )
+        self.logger.info(
+            "local_llama_cpp_initialized",
+            extra={
+                "model_path": model_path,
+                "n_ctx": n_ctx,
+                "n_gpu_layers": n_gpu_layers,
+                "n_threads": n_threads,
+            },
+        )
+
+    @staticmethod
+    def _map_generation_kwargs(kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        mapped = {}
+        if "max_new_tokens" in kwargs:
+            mapped["max_tokens"] = min(
+                int(kwargs["max_new_tokens"]), LOCAL_LLM_MAX_NEW_TOKENS
+            )
+        if "temperature" in kwargs:
+            mapped["temperature"] = kwargs["temperature"]
+        if "top_p" in kwargs:
+            mapped["top_p"] = kwargs["top_p"]
+        return mapped
+
+    def _truncate_prompt(self, prompt: str) -> str:
+        max_output = int(self._generation_kwargs.get("max_tokens", 0))
+        max_prompt_tokens = max(self._n_ctx - max_output - 1, 1)
+        tokens = self._model.tokenize(prompt.encode("utf-8"))
+
+        if len(tokens) <= max_prompt_tokens:
+            return prompt
+
+        head_tokens = max(int(max_prompt_tokens * 0.7), 1)
+        tail_tokens = max_prompt_tokens - head_tokens
+
+        if tail_tokens <= 0:
+            trimmed_tokens = tokens[:max_prompt_tokens]
+        else:
+            trimmed_tokens = tokens[:head_tokens] + tokens[-tail_tokens:]
+
+        trimmed = self._model.detokenize(trimmed_tokens).decode(
+            "utf-8", errors="ignore"
+        )
+        self.logger.warning(
+            "local_llama_cpp_prompt_truncated",
+            extra={
+                "original_tokens": len(tokens),
+                "max_prompt_tokens": max_prompt_tokens,
+                "truncated_tokens": len(trimmed_tokens),
+            },
+        )
+        return trimmed
+
+    def __call__(self, prompt: str) -> List[Dict[str, str]]:
+        start = perf_counter()
+        safe_prompt = self._truncate_prompt(prompt)
+        output = self._model(
+            safe_prompt,
+            stream=False,
+            **self._generation_kwargs,
+        )
+        result = cast(Dict[str, Any], output)
+        text = result.get("choices", [{}])[0].get("text", "")
+        duration_ms = (perf_counter() - start) * 1000
+        self.logger.info(
+            "local_llama_cpp_generate_complete",
+            extra={
+                "output_length": len(text),
+                "duration_ms": duration_ms,
+            },
+        )
+        return [{"generated_text": text}]
+
+
+@lru_cache(maxsize=2)
 @lru_cache(maxsize=2)
 def load_llm(model_name: str = DEFAULT_LLM_MODEL):
-    """Load an LLM via cloud API (Gemini, Groq, or HuggingFace Inference).
+    """Load an LLM via cloud API or local llama.cpp backend.
 
-    Cloud providers are used exclusively to avoid local GPU/CPU inference costs.
-    Priority order for fallback: Gemini -> Groq -> HuggingFace.
+    Priority order for fallback (cloud only): Gemini -> Groq -> HuggingFace.
     """
     logger = get_logger(__name__)
 
     backend = LLM_BACKEND.lower()
+
+    if backend in {"local", "llama_cpp", "llamacpp"}:
+        resolved_model_path = (
+            model_name if model_name != DEFAULT_LLM_MODEL else LOCAL_LLM_MODEL_PATH
+        )
+        logger.info(
+            "load_llm_local_start",
+            extra={
+                "model_path": resolved_model_path or "",
+                "generation_kwargs": GENERATION_KWARGS,
+            },
+        )
+        return LocalLlamaCppLLM(
+            model_path=resolved_model_path,
+            generation_kwargs=GENERATION_KWARGS,
+            n_ctx=LOCAL_LLM_N_CTX,
+            n_gpu_layers=LOCAL_LLM_N_GPU_LAYERS,
+            n_threads=LOCAL_LLM_N_THREADS,
+        )
 
     # Prepare fallbacks
     groq_llm = None

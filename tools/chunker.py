@@ -1,14 +1,14 @@
 """Split long documents into overlapping token-aware chunks."""
 
 import uuid
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 try:
     import tiktoken
 except (ImportError, ModuleNotFoundError):  # pragma: no cover
     tiktoken = None
 
-from api.config import CHUNK_OVERLAP, CHUNK_SIZE
+from api.config import CHUNK_OVERLAP, CHUNK_SIZE, CONTEXTUAL_CHUNKS_ENABLED
 from api.logging_setup import get_logger
 from api.state import Chunk, Document
 
@@ -105,8 +105,19 @@ class TextChunker:
         )
         return chunks
 
-    def chunk_document(self, doc: Document) -> List[Chunk]:
-        """Chunk a Document and attach metadata."""
+    def chunk_document(
+        self, doc: Document, llm=None, run_id: Optional[str] = None
+    ) -> List[Chunk]:
+        """Chunk a Document and attach metadata.
+
+        Args:
+            doc: The document to chunk.
+            llm: Optional LLM for contextual chunking.
+            run_id: Run correlation ID for logging.
+
+        Returns:
+            List of chunks with metadata.
+        """
         logger = get_logger(__name__)
         logger.debug(
             "chunk_document_start",
@@ -128,6 +139,23 @@ class TextChunker:
             chunk_id = f"{uuid.uuid4()}"
             metadata["chunk_id"] = chunk_id
             chunks.append(Chunk(id=chunk_id, text=text, metadata=metadata))
+
+        # Apply contextual chunking if enabled
+        if CONTEXTUAL_CHUNKS_ENABLED and chunks:
+            try:
+                from tools.contextual_chunker import contextualize_chunks
+
+                chunks = contextualize_chunks(doc, chunks, llm=llm, run_id=run_id)
+                logger.debug(
+                    "chunk_document_contextualized",
+                    extra={"url": doc.url, "chunks": len(chunks)},
+                )
+            except Exception as exc:
+                logger.warning(
+                    "chunk_document_contextualization_failed",
+                    extra={"url": doc.url, "error": str(exc)[:200]},
+                )
+
         logger.debug(
             "chunk_document_complete",
             extra={"url": doc.url, "chunks_created": len(chunks)},

@@ -2,7 +2,7 @@
 
 from typing import List, Optional
 
-from api.config import DEFAULT_EMBED_MODEL, VECTOR_STORE_BACKEND
+from api.config import DEFAULT_EMBED_MODEL, HYBRID_SEARCH_ENABLED, VECTOR_STORE_BACKEND
 from api.logging_setup import get_logger
 from api.state import Chunk, Document
 from tools.chunker import TextChunker
@@ -18,6 +18,18 @@ def build_vector_store(
 ) -> VectorStore:
     logger = get_logger(__name__, run_id=run_id)
     backend = VECTOR_STORE_BACKEND.lower()
+
+    # Check for hybrid search - takes precedence when enabled
+    if HYBRID_SEARCH_ENABLED and backend not in ("faiss",):
+        from vector_store.hybrid_store import HybridVectorStore
+
+        logger.info(
+            "build_vector_store",
+            extra={"backend": "hybrid", "model_name": model_name},
+        )
+        logger.debug("vector_store_using_hybrid")
+        return HybridVectorStore(model_name=model_name, run_id=run_id)
+
     logger.info(
         "build_vector_store",
         extra={"backend": backend, "model_name": model_name},

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Optional, Tuple
 
-from api.config import VALIDATE_RESULTS_ENABLED
+from api.config import LLM_BACKEND, VALIDATE_RESULTS_ENABLED
 from api.logging_setup import get_logger
 from api.state import SearchQuery, SearchResult
 from tools.models import load_llm
@@ -34,6 +34,10 @@ Example: [1, 2, 3, 4, 5]
 If ALL results are completely off-topic, return: []"""
 
 
+def _is_local_backend() -> bool:
+    return LLM_BACKEND.lower() in {"local", "llama_cpp", "llamacpp"}
+
+
 def _extract_json_payload(text: str) -> str:
     """Extract JSON payload from free-form LLM output."""
     if "```json" in text:
@@ -51,6 +55,17 @@ def analyze_query_with_llm(query: str, run_id: Optional[str] = None) -> Dict[str
     """Use LLM to understand query intent and generate search strategy."""
     logger = get_logger(__name__, run_id=run_id)
     logger.info("query_analysis_start", extra={"query": query})
+
+    if _is_local_backend():
+        logger.info("query_analysis_skipped_local_backend")
+        return {
+            "intent": "general",
+            "entities": [],
+            "topic": "general",
+            "time_sensitivity": "any",
+            "suggested_searches": [{"query": query, "rationale": "original query"}],
+            "authoritative_sources": [],
+        }
 
     llm = load_llm()
     prompt = QUERY_ANALYSIS_PROMPT.format(query=query)
@@ -101,6 +116,10 @@ def validate_results_with_llm(
 
     if not results:
         return []
+
+    if _is_local_backend():
+        logger.info("result_validation_skipped_local_backend")
+        return results
 
     if not VALIDATE_RESULTS_ENABLED:
         logger.info("result_validation_skipped", extra={"reason": "disabled"})

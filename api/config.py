@@ -34,9 +34,28 @@ DATA_DIR = BASE_DIR / "data"
 # LLMs run via managed cloud providers only (no local inference path).
 # Default to Gemini Flash for low-latency, low-cost remote execution.
 DEFAULT_LLM_MODEL = os.getenv("AUTO_ANALYST_LLM", "gemini-2.0-flash")
-DEFAULT_EMBED_MODEL = os.getenv("AUTO_ANALYST_EMBED", "all-MiniLM-L6-v2")
+# NOTE: Default embedding model was changed from "all-MiniLM-L6-v2" to
+# "BAAI/bge-small-en-v1.5". This is a breaking change for existing
+# embeddings, as vectors produced by different models are not compatible.
+# ChromaVectorStore tracks the embedding model version and will
+# automatically clear/rebuild incompatible vector stores when a model
+# mismatch is detected, so no manual migration is required. This model
+# was chosen for improved retrieval quality and performance for
+# Auto-Analyst use cases.
+DEFAULT_EMBED_MODEL = os.getenv("AUTO_ANALYST_EMBED", "BAAI/bge-small-en-v1.5")
 LLM_BACKEND = os.getenv("AUTO_ANALYST_LLM_BACKEND", "gemini").lower()
 GEMINI_MODEL = os.getenv("AUTO_ANALYST_GEMINI_MODEL", "gemini-2.0-flash")
+
+# Local LLM (llama.cpp) configuration
+LOCAL_LLM_MODEL_PATH = os.getenv("AUTO_ANALYST_LOCAL_MODEL_PATH", "")
+LOCAL_LLM_N_CTX = int(os.getenv("AUTO_ANALYST_LOCAL_LLM_N_CTX", "4096"))
+LOCAL_LLM_N_GPU_LAYERS = int(
+    os.getenv("AUTO_ANALYST_LOCAL_LLM_N_GPU_LAYERS", "35")
+)
+LOCAL_LLM_N_THREADS = int(os.getenv("AUTO_ANALYST_LOCAL_LLM_N_THREADS", "8"))
+LOCAL_LLM_MAX_NEW_TOKENS = int(
+    os.getenv("AUTO_ANALYST_LOCAL_LLM_MAX_NEW_TOKENS", "512")
+)
 
 # Support multiple API keys for rotation on rate limits
 _api_keys_str = os.getenv("GOOGLE_API_KEYS", "")
@@ -56,9 +75,9 @@ HUGGINGFACE_INFERENCE_MODEL = os.getenv(
     "AUTO_ANALYST_HF_INFERENCE_MODEL", "mistralai/Mixtral-8x7B-Instruct-v0.1"
 )
 
-# Generation parameters - max_new_tokens=1024 allows for detailed, structured responses
+# Generation parameters - max_new_tokens=1536 allows for detailed, structured responses
 GENERATION_KWARGS: Dict[str, Any] = {
-    "max_new_tokens": 1024,
+    "max_new_tokens": 1536,
     "temperature": 0.4,
     "do_sample": True,
 }
@@ -110,7 +129,7 @@ ADAPTIVE_MAX_ITERS = int(os.getenv("AUTO_ANALYST_ADAPTIVE_MAX_ITERS", "2"))
 QC_MAX_PASSES = int(os.getenv("AUTO_ANALYST_QC_MAX_PASSES", "1"))
 CHUNK_SIZE = int(os.getenv("AUTO_ANALYST_CHUNK_SIZE", "1000"))
 CHUNK_OVERLAP = int(os.getenv("AUTO_ANALYST_CHUNK_OVERLAP", "200"))
-TOP_K_RESULTS = int(os.getenv("AUTO_ANALYST_TOP_K", "6"))
+TOP_K_RESULTS = int(os.getenv("AUTO_ANALYST_TOP_K", "12"))
 
 # Minimum content length (chars) to consider a document useful for RAG
 # Documents shorter than this are filtered out (likely boilerplate/nav only)
@@ -197,3 +216,33 @@ FETCH_TIMEOUT = int(os.getenv("AUTO_ANALYST_FETCH_TIMEOUT", "15"))
 # ROBOTS.TXT CACHE CONFIGURATION
 # =============================================================================
 ROBOTS_CACHE_TTL_SECONDS = int(os.getenv("AUTO_ANALYST_ROBOTS_CACHE_TTL", "1800"))
+
+# =============================================================================
+# CONTEXTUAL CHUNKING CONFIGURATION
+# =============================================================================
+# When enabled, uses LLM to add document context to each chunk before embedding
+# This improves retrieval by preserving document-level context in chunk embeddings
+CONTEXTUAL_CHUNKS_ENABLED = (
+    os.getenv("AUTO_ANALYST_CONTEXTUAL_CHUNKS", "true").lower() == "true"
+)
+CONTEXTUAL_MAX_CHUNKS_PER_DOC = int(
+    os.getenv("AUTO_ANALYST_CONTEXTUAL_MAX_CHUNKS_PER_DOC", "4")
+)
+CONTEXTUAL_DOCUMENT_CHAR_LIMIT = int(
+    os.getenv("AUTO_ANALYST_CONTEXTUAL_DOCUMENT_CHAR_LIMIT", "8000")
+)
+CONTEXTUAL_CHUNK_CHAR_LIMIT = int(
+    os.getenv("AUTO_ANALYST_CONTEXTUAL_CHUNK_CHAR_LIMIT", "1200")
+)
+
+# =============================================================================
+# HYBRID SEARCH CONFIGURATION
+# =============================================================================
+# When enabled, combines BM25 lexical search with embedding-based semantic search
+# using reciprocal rank fusion for better retrieval on keyword-heavy queries
+HYBRID_SEARCH_ENABLED = (
+    os.getenv("AUTO_ANALYST_HYBRID_SEARCH", "true").lower() == "true"
+)
+# Weight for BM25 results in rank fusion (0.0-1.0, default 0.3)
+# Higher values give more weight to exact keyword matches
+BM25_WEIGHT = float(os.getenv("AUTO_ANALYST_BM25_WEIGHT", "0.3"))

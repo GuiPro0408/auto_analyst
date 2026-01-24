@@ -8,6 +8,7 @@ from api.config import (
     COHERENCE_MAX_WORD_REPEAT,
     COHERENCE_MIN_ALNUM_RATIO,
     COHERENCE_MIN_WORDS,
+    LLM_BACKEND,
 )
 from api.logging_setup import get_logger
 from api.state import Chunk
@@ -33,7 +34,8 @@ Guidelines:
 {list_instruction}\
 - Support every claim with inline citations [n] using the context entries
 - Be specific: include dates, names, figures, and technical details from the sources
-- If sources disagree, mention the different perspectives
+- If sources present conflicting information, acknowledge both perspectives with their respective citations
+- If the context is insufficient to fully answer the question, clearly state what aspects cannot be addressed and why
 - Do not fabricate information; stay strictly within the context provided
 
 {context_instruction}User question: {query}
@@ -55,6 +57,8 @@ Guidelines:
 {list_instruction}\
 - Use [n] citations whenever a detail or specific item is found in the search results
 - Add your own expert perspective to add value beyond the raw search data
+- If sources present conflicting opinions or reviews, acknowledge both perspectives
+- If the context lacks sufficient options or details, clearly note what additional information would help
 - Ensure the response is engaging, detailed, and worth reading
 
 {context_instruction}User question: {query}
@@ -74,6 +78,8 @@ Guidelines:
 {list_instruction}\
 - Reference sources with [n] when using specific information from them
 - You may expand beyond the provided context when helpful
+- If sources offer different viewpoints, explore the nuances of each
+- If the context is limited, acknowledge it while still providing your best response
 
 {context_instruction}User question: {query}
 
@@ -95,6 +101,10 @@ RESPONSE_DELIMITERS = {
     QUERY_TYPE_RECOMMENDATION: "Detailed Recommendations:",
     QUERY_TYPE_CREATIVE: "Response:",
 }
+
+
+def _is_local_backend() -> bool:
+    return LLM_BACKEND.lower() in {"local", "llama_cpp", "llamacpp"}
 
 
 def _format_context(chunks: List[Chunk]) -> str:
@@ -350,6 +360,31 @@ def generate_answer(
             "Please try rephrasing your question or being more specific.",
             [],
         )
+
+    if _is_local_backend():
+        max_chunks = 4
+        max_chunk_chars = 1200
+        if len(relevant_chunks) > max_chunks:
+            logger.info(
+                "generate_local_trim_chunks",
+                extra={
+                    "original_chunks": len(relevant_chunks),
+                    "kept_chunks": max_chunks,
+                },
+            )
+        trimmed_chunks: List[Chunk] = []
+        for chunk in relevant_chunks[:max_chunks]:
+            text = chunk.text or ""
+            if len(text) > max_chunk_chars:
+                text = text[:max_chunk_chars]
+            trimmed_chunks.append(
+                Chunk(
+                    id=chunk.id,
+                    text=text,
+                    metadata=chunk.metadata,
+                )
+            )
+        relevant_chunks = trimmed_chunks
 
     context_block = _format_context(relevant_chunks)
     logger.debug(
@@ -803,6 +838,10 @@ def verify_answer(
             "conversation_context": bool(conversation_context),
         },
     )
+
+    if _is_local_backend():
+        logger.info("verify_answer_skipped_local_backend")
+        return draft
     if not retrieved:
         logger.warning("verify_no_context", extra={"returning": "draft"})
         return draft
