@@ -53,8 +53,9 @@ _consecutive_failures = 0
 _cooldown_until = 0.0
 
 
-def _is_local_backend() -> bool:
-    return LLM_BACKEND.lower() in {"local", "llama_cpp", "llamacpp"}
+def _is_limited_backend() -> bool:
+    """Check if backend has rate limits that make contextual chunking impractical."""
+    return LLM_BACKEND.lower() in {"local", "llama_cpp", "llamacpp", "groq"}
 
 
 def generate_chunk_context(
@@ -82,8 +83,8 @@ def generate_chunk_context(
         logger.debug("contextual_chunking_disabled")
         return ""
 
-    if _is_local_backend():
-        logger.info("contextual_chunking_skipped_local_backend")
+    if _is_limited_backend():
+        logger.info("contextual_chunking_skipped_limited_backend")
         return ""
 
     now = time()
@@ -177,8 +178,8 @@ def contextualize_chunks(
         logger.debug("contextual_chunking_disabled_skipping")
         return chunks
 
-    if _is_local_backend():
-        logger.info("contextual_chunking_skipped_local_backend")
+    if _is_limited_backend():
+        logger.info("contextual_chunking_skipped_limited_backend")
         return chunks
 
     if not chunks:

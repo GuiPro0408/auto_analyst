@@ -12,8 +12,12 @@ from tests.conftest import FakeLLM, FakeVectorStore
 
 
 @pytest.mark.integration
-def test_end_to_end_pipeline(mock_search_and_fetch):
+def test_end_to_end_pipeline(mock_search_and_fetch, monkeypatch):
     """Test complete pipeline from query to verified answer."""
+    # Force non-local backend for full verification flow
+    monkeypatch.setattr("tools.generator.LLM_BACKEND", "gemini")
+    monkeypatch.setattr("tools.quality_control.LLM_BACKEND", "gemini")
+    
     fake_llm = FakeLLM()
     fake_store = FakeVectorStore()
     result = run_research(

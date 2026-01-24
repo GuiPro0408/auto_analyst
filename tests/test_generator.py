@@ -44,8 +44,10 @@ def test_verify_answer_pass_through():
 
 
 @pytest.mark.unit
-def test_generate_answer_receives_conversation_context():
-    """Generator should include conversation context in prompt."""
+def test_generate_answer_receives_conversation_context(monkeypatch):
+    """Generator should include conversation context in prompt (non-local backend)."""
+    # Force non-local backend for this test
+    monkeypatch.setattr("tools.generator.LLM_BACKEND", "gemini")
     chunk = Chunk(
         id="1",
         text="context text",
@@ -58,8 +60,10 @@ def test_generate_answer_receives_conversation_context():
 
 
 @pytest.mark.unit
-def test_verify_answer_receives_conversation_context():
-    """Verifier should include conversation context in prompt."""
+def test_verify_answer_receives_conversation_context(monkeypatch):
+    """Verifier should include conversation context in prompt (non-local backend)."""
+    # Force non-local backend for this test
+    monkeypatch.setattr("tools.generator.LLM_BACKEND", "gemini")
     chunk = Chunk(
         id="1",
         text="context text",

@@ -23,6 +23,16 @@ QUERY_TYPE_CREATIVE = "creative"
 # PROMPT TEMPLATES BY QUERY TYPE
 # =============================================================================
 
+# Compact prompt for local/CPU LLM to reduce token overhead
+PROMPT_LOCAL_COMPACT = """Answer the question using only the context below. Be concise but complete. Cite sources with [n].
+
+Question: {query}
+
+Context:
+{context_block}
+
+Answer:"""
+
 PROMPT_FACTUAL = """You are a highly capable, evidence-based research assistant. Using the context provided, \
 write a sophisticated, well-structured, and comprehensive answer to the user question.
 
@@ -105,6 +115,11 @@ RESPONSE_DELIMITERS = {
 
 def _is_local_backend() -> bool:
     return LLM_BACKEND.lower() in {"local", "llama_cpp", "llamacpp"}
+
+
+def _is_limited_backend() -> bool:
+    """Check if backend has limits that require optimizations."""
+    return LLM_BACKEND.lower() in {"local", "llama_cpp", "llamacpp", "groq"}
 
 
 def _format_context(chunks: List[Chunk]) -> str:
@@ -361,15 +376,17 @@ def generate_answer(
             [],
         )
 
-    if _is_local_backend():
-        max_chunks = 4
-        max_chunk_chars = 1200
+    # Trim context for backends with token limits
+    if _is_limited_backend():
+        max_chunks = 6 if not _is_local_backend() else 4
+        max_chunk_chars = 800 if not _is_local_backend() else 1200
         if len(relevant_chunks) > max_chunks:
             logger.info(
-                "generate_local_trim_chunks",
+                "generate_limited_trim_chunks",
                 extra={
                     "original_chunks": len(relevant_chunks),
                     "kept_chunks": max_chunks,
+                    "backend": LLM_BACKEND,
                 },
             )
         trimmed_chunks: List[Chunk] = []
@@ -394,34 +411,48 @@ def generate_answer(
             "chunks_used": len(relevant_chunks),
         },
     )
-    context_instruction = ""
-    if conversation_context:
-        trimmed_context = " ".join(conversation_context.split())
-        if len(trimmed_context) > 800:
-            trimmed_context = trimmed_context[-800:]
-        context_instruction = (
-            "Prior conversation summary (use for continuity when relevant):\n"
-            f"{trimmed_context}\n\n"
+
+    # Use compact prompt for local backend to reduce token overhead
+    if _is_local_backend():
+        prompt = PROMPT_LOCAL_COMPACT.format(
+            query=query,
+            context_block=context_block,
+        )
+        response_delimiter = "Answer:"
+        logger.debug(
+            "generate_using_compact_prompt",
+            extra={"prompt_length": len(prompt)},
+        )
+    else:
+        context_instruction = ""
+        if conversation_context:
+            trimmed_context = " ".join(conversation_context.split())
+            if len(trimmed_context) > 800:
+                trimmed_context = trimmed_context[-800:]
+            context_instruction = (
+                "Prior conversation summary (use for continuity when relevant):\n"
+                f"{trimmed_context}\n\n"
+            )
+
+        list_instruction = ""
+        if requires_structured_list(query):
+            list_instruction = (
+                "- Present the answer as a bullet or numbered list of items. "
+                "For each item include the name/title and any available date/status, "
+                "with an inline citation [n] for that item.\n"
+            )
+
+        # Select prompt template based on query type
+        prompt_template = PROMPT_TEMPLATES.get(query_type, PROMPT_FACTUAL)
+        response_delimiter = RESPONSE_DELIMITERS.get(query_type, "Answer:")
+
+        prompt = prompt_template.format(
+            list_instruction=list_instruction,
+            context_instruction=context_instruction,
+            query=query,
+            context_block=context_block,
         )
 
-    list_instruction = ""
-    if requires_structured_list(query):
-        list_instruction = (
-            "- Present the answer as a bullet or numbered list of items. "
-            "For each item include the name/title and any available date/status, "
-            "with an inline citation [n] for that item.\n"
-        )
-
-    # Select prompt template based on query type
-    prompt_template = PROMPT_TEMPLATES.get(query_type, PROMPT_FACTUAL)
-    response_delimiter = RESPONSE_DELIMITERS.get(query_type, "Answer:")
-
-    prompt = prompt_template.format(
-        list_instruction=list_instruction,
-        context_instruction=context_instruction,
-        query=query,
-        context_block=context_block,
-    )
     logger.debug(
         "generate_llm_call",
         extra={"prompt_length": len(prompt), "query_type": query_type},
@@ -839,8 +870,8 @@ def verify_answer(
         },
     )
 
-    if _is_local_backend():
-        logger.info("verify_answer_skipped_local_backend")
+    if _is_limited_backend():
+        logger.info("verify_answer_skipped_limited_backend")
         return draft
     if not retrieved:
         logger.warning("verify_no_context", extra={"returning": "draft"})
