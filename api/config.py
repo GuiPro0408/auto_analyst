@@ -31,27 +31,15 @@ DATA_DIR = BASE_DIR / "data"
 # =============================================================================
 # LLM CONFIGURATION
 # =============================================================================
-# LLMs run via managed cloud providers only (no local inference path).
-# Default to Gemini Flash for low-latency, low-cost remote execution.
 DEFAULT_LLM_MODEL = os.getenv("AUTO_ANALYST_LLM", "gemini-2.0-flash")
-# NOTE: Default embedding model was changed from "all-MiniLM-L6-v2" to
-# "BAAI/bge-small-en-v1.5". This is a breaking change for existing
-# embeddings, as vectors produced by different models are not compatible.
-# ChromaVectorStore tracks the embedding model version and will
-# automatically clear/rebuild incompatible vector stores when a model
-# mismatch is detected, so no manual migration is required. This model
-# was chosen for improved retrieval quality and performance for
-# Auto-Analyst use cases.
-DEFAULT_EMBED_MODEL = os.getenv("AUTO_ANALYST_EMBED", "BAAI/bge-small-en-v1.5")
+DEFAULT_EMBED_MODEL = os.getenv("AUTO_ANALYST_EMBED", "all-MiniLM-L6-v2")
 LLM_BACKEND = os.getenv("AUTO_ANALYST_LLM_BACKEND", "gemini").lower()
 GEMINI_MODEL = os.getenv("AUTO_ANALYST_GEMINI_MODEL", "gemini-2.0-flash")
 
 # Local LLM (llama.cpp) configuration
 LOCAL_LLM_MODEL_PATH = os.getenv("AUTO_ANALYST_LOCAL_MODEL_PATH", "")
 LOCAL_LLM_N_CTX = int(os.getenv("AUTO_ANALYST_LOCAL_LLM_N_CTX", "4096"))
-LOCAL_LLM_N_GPU_LAYERS = int(
-    os.getenv("AUTO_ANALYST_LOCAL_LLM_N_GPU_LAYERS", "35")
-)
+LOCAL_LLM_N_GPU_LAYERS = int(os.getenv("AUTO_ANALYST_LOCAL_LLM_N_GPU_LAYERS", "35"))
 LOCAL_LLM_N_THREADS = int(os.getenv("AUTO_ANALYST_LOCAL_LLM_N_THREADS", "8"))
 LOCAL_LLM_MAX_NEW_TOKENS = int(
     os.getenv("AUTO_ANALYST_LOCAL_LLM_MAX_NEW_TOKENS", "512")
@@ -68,7 +56,7 @@ if not GEMINI_API_KEYS and GEMINI_API_KEY:
     GEMINI_API_KEYS = [GEMINI_API_KEY]
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+GROQ_MODEL = os.getenv("AUTO_ANALYST_GROQ_MODEL", "llama-3.3-70b-versatile")
 
 HUGGINGFACE_API_TOKEN = os.getenv("HUGGINGFACE_API_TOKEN", "")
 HUGGINGFACE_INFERENCE_MODEL = os.getenv(
@@ -93,11 +81,6 @@ SMART_SEARCH_ENABLED = os.getenv("AUTO_ANALYST_SMART_SEARCH", "true").lower() ==
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
 VALIDATE_RESULTS_ENABLED = (
     os.getenv("AUTO_ANALYST_VALIDATE_RESULTS", "true").lower() == "true"
-)
-# When True, falls back to alternative search backends (e.g., Tavily) when
-# Gemini API keys are exhausted due to rate limits
-SEARCH_FALLBACK_ON_RATE_LIMIT = (
-    os.getenv("AUTO_ANALYST_SEARCH_FALLBACK", "true").lower() == "true"
 )
 
 # =============================================================================
@@ -169,9 +152,6 @@ RERANK_MODEL_NAME = os.getenv(
 # =============================================================================
 CONVERSATION_MEMORY_TURNS = int(os.getenv("AUTO_ANALYST_MEMORY_TURNS", "5"))
 CONVERSATION_SUMMARY_CHARS = int(os.getenv("AUTO_ANALYST_MEMORY_SUMMARY_CHARS", "1200"))
-CONVERSATION_CONTEXT_MAX_CHARS = int(
-    os.getenv("AUTO_ANALYST_CONVERSATION_CONTEXT_MAX_CHARS", "800")
-)
 ANSWER_PREVIEW_MAX_LEN = int(os.getenv("AUTO_ANALYST_ANSWER_PREVIEW_MAX_LEN", "280"))
 
 # =============================================================================

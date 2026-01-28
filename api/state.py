@@ -17,7 +17,7 @@ Design Note:
 
 from dataclasses import dataclass, field
 from time import time
-from typing import Any, Dict, List, Optional, TypedDict
+from typing import Any, Dict, List, TypedDict
 
 
 @dataclass

@@ -128,25 +128,6 @@ Checks include:
 - Alphanumeric character ratio
 - Pattern detection (repeated words/fragments)
 
-## Fallback Pattern
-
-Always implement fallback when LLM output is unusable:
-
-```python
-def generate_answer(llm, query, retrieved, conversation_context=None):
-    # ... LLM call ...
-    
-    if not _is_coherent(answer):
-        logger.warning("generate_incoherent_answer")
-        answer = _generate_fallback_answer(query, relevant_chunks)
-    
-    return answer, citations
-
-def _generate_fallback_answer(query: str, chunks: List[Chunk]) -> str:
-    """Generate a structured extractive answer when LLM output is incoherent."""
-    # Build structured summary from retrieved chunks
-```
-
 ## Gemini Grounding
 
 For web-augmented responses, use `tools/gemini_grounding.py`:

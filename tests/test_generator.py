@@ -10,7 +10,6 @@ from tools.generator import (
     build_citations,
     generate_answer,
     verify_answer,
-    _generate_fallback_answer,
     _clean_snippet,
 )
 from tests.conftest import FakeLLM, CapturingLLM
@@ -47,7 +46,7 @@ def test_verify_answer_pass_through():
 def test_generate_answer_receives_conversation_context(monkeypatch):
     """Generator should include conversation context in prompt (non-local backend)."""
     # Force non-local backend for this test
-    monkeypatch.setattr("tools.generator.LLM_BACKEND", "gemini")
+    monkeypatch.setattr("api.backend_utils.LLM_BACKEND", "gemini")
     chunk = Chunk(
         id="1",
         text="context text",
@@ -62,8 +61,8 @@ def test_generate_answer_receives_conversation_context(monkeypatch):
 @pytest.mark.unit
 def test_verify_answer_receives_conversation_context(monkeypatch):
     """Verifier should include conversation context in prompt (non-local backend)."""
-    # Force non-local backend for this test
-    monkeypatch.setattr("tools.generator.LLM_BACKEND", "gemini")
+    # Force non-limited backend for this test (verify_answer skips for limited backends)
+    monkeypatch.setattr("api.backend_utils.LLM_BACKEND", "gemini")
     chunk = Chunk(
         id="1",
         text="context text",
@@ -132,64 +131,8 @@ def test_build_citations_deduplicates_urls():
     assert all(isinstance(c, dict) for c in citations)
 
 
-class TestFallbackAnswer:
-    """Tests for the improved fallback answer generation."""
-
-    @pytest.mark.unit
-    def test_fallback_empty_chunks(self):
-        """Fallback should handle empty chunks gracefully."""
-        answer = _generate_fallback_answer("test query", [])
-        assert "couldn't find" in answer.lower() or "insufficient" in answer.lower()
-
-    @pytest.mark.unit
-    def test_fallback_recommendation_query(self):
-        """Fallback should detect recommendation queries and format nicely."""
-        chunks = [
-            Chunk(
-                id="1",
-                text="Solo Leveling is a great anime. The Apothecary Diaries is also popular.",
-                metadata={
-                    "title": "Best Anime 2025",
-                    "url": "https://example.com/anime",
-                },
-            ),
-        ]
-        answer = _generate_fallback_answer("What anime should I watch?", chunks)
-        assert "**" in answer  # Has bold formatting
-        assert "Solo Leveling" in answer or "Apothecary" in answer
-
-    @pytest.mark.unit
-    def test_fallback_cleans_boilerplate(self):
-        """Fallback should clean URLs and boilerplate from snippets."""
-        chunks = [
-            Chunk(
-                id="1",
-                text="Sign in to your account. https://example.com/link Check out this anime.",
-                metadata={"title": "Test", "url": "https://example.com"},
-            ),
-        ]
-        answer = _generate_fallback_answer("test", chunks)
-        # Should not contain raw URLs in the snippet
-        assert "https://example.com/link" not in answer
-
-    @pytest.mark.unit
-    def test_fallback_deduplicates_sources(self):
-        """Fallback should not repeat the same source multiple times."""
-        chunks = [
-            Chunk(
-                id="1",
-                text="This is substantial content from the first chunk about anime recommendations for the winter season.",
-                metadata={"title": "Same Source", "url": "https://example.com"},
-            ),
-            Chunk(
-                id="2",
-                text="This is different substantial content from the second chunk about more anime series to watch.",
-                metadata={"title": "Same Source", "url": "https://example.com"},
-            ),
-        ]
-        answer = _generate_fallback_answer("test", chunks)
-        # Should only appear once since URL is duplicated
-        assert answer.count("Same Source") == 1
+class TestCleanSnippet:
+    """Tests for the _clean_snippet utility function."""
 
     @pytest.mark.unit
     def test_clean_snippet_removes_noise(self):
@@ -207,89 +150,3 @@ class TestFallbackAnswer:
         cleaned = _clean_snippet(raw, max_len=50)
         # Should end at a sentence boundary, not mid-word
         assert cleaned.endswith(".") or cleaned.endswith("...")
-
-
-# =============================================================================
-# FALLBACK FORMAT TESTS (for query-type-specific fallback answers)
-# =============================================================================
-
-
-@pytest.mark.unit
-def test_fallback_comparison_format():
-    """Fallback for comparison queries should include markdown table structure."""
-    from tools.generator import _generate_fallback_answer, _is_comparison_query
-
-    # Test comparison detection
-    assert _is_comparison_query("Compare Gemini vs GPT-4o")
-    assert _is_comparison_query("What's the difference between Claude and GPT?")
-    assert _is_comparison_query("Which is better: Gemini or Claude?")
-    assert not _is_comparison_query("How does Gemini work?")
-    assert not _is_comparison_query("Tell me about machine learning")
-
-    # Test comparison fallback format
-    chunks = [
-        Chunk(
-            id="1",
-            text="Gemini 2.0 Flash offers fast inference with good quality.",
-            metadata={"title": "AI Comparison", "url": "https://example.com/ai"},
-        ),
-        Chunk(
-            id="2",
-            text="GPT-4o provides strong reasoning capabilities.",
-            metadata={"title": "Model Review", "url": "https://example.com/gpt"},
-        ),
-    ]
-    answer = _generate_fallback_answer("Compare Gemini vs GPT-4o", chunks)
-
-    # Should have comparison-specific format
-    assert "**Comparison Summary**" in answer
-    assert "| Aspect |" in answer  # Table header
-    assert "Key Information from Sources" in answer
-    assert "comparison summary was generated" in answer
-
-
-@pytest.mark.unit
-def test_fallback_recommendation_format():
-    """Fallback for recommendation queries should list mentioned titles."""
-    from tools.generator import _generate_fallback_answer
-
-    chunks = [
-        Chunk(
-            id="1",
-            text="Attack on Titan is a must-watch anime series with incredible action.",
-            metadata={"title": "Best Anime Guide", "url": "https://example.com/anime"},
-        ),
-        Chunk(
-            id="2",
-            text="Demon Slayer has stunning animation and emotional story.",
-            metadata={"title": "Anime Reviews", "url": "https://example.com/reviews"},
-        ),
-    ]
-    answer = _generate_fallback_answer("Recommend me some good anime to watch", chunks)
-
-    # Should have recommendation-specific format with mentioned titles
-    assert "Mentioned Titles" in answer or "Source Highlights" in answer
-    assert "Based on the sources" in answer or "Source Highlights" in answer
-    # Should include source links
-    assert "Read more" in answer
-
-
-@pytest.mark.unit
-def test_fallback_general_format():
-    """Fallback for general queries should show source highlights."""
-    from tools.generator import _generate_fallback_answer
-
-    chunks = [
-        Chunk(
-            id="1",
-            text="Python is a popular programming language used for web development.",
-            metadata={"title": "Python Guide", "url": "https://example.com/python"},
-        ),
-    ]
-    answer = _generate_fallback_answer("What is Python programming?", chunks)
-
-    # Should have general format with source highlights
-    assert "Source Highlights" in answer
-    assert "Python Guide" in answer
-    assert "Read more" in answer
-    assert "generated from retrieved sources" in answer

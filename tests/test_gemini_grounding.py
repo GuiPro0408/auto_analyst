@@ -63,7 +63,10 @@ class TestQueryWithGrounding:
 
             # The actual implementation catches ImportError
             assert result.success is False
-            assert "google.genai" in (result.error or "").lower() or "google-genai" in (result.error or "").lower()
+            assert (
+                "google.genai" in (result.error or "").lower()
+                or "google-genai" in (result.error or "").lower()
+            )
         finally:
             # Restore original modules
             sys.modules.update(original_modules)
@@ -102,7 +105,9 @@ class TestQueryWithGrounding:
         mock_types.GenerateContentConfig.return_value = MagicMock()
 
         # Patch the imports within the function
-        with patch.dict("sys.modules", {"google": MagicMock(), "google.genai": MagicMock()}):
+        with patch.dict(
+            "sys.modules", {"google": MagicMock(), "google.genai": MagicMock()}
+        ):
             with patch("google.genai.Client", return_value=mock_client):
                 with patch("google.genai.types", mock_types):
                     # Import after patching

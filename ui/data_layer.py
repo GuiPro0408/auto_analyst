@@ -35,11 +35,11 @@ class LocalStorageClient(BaseStorageClient):
         """Upload a file to local storage."""
         file_path = self.base_path / object_key
         file_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
         mode = "wb" if isinstance(data, bytes) else "w"
         with open(file_path, mode) as f:
             f.write(data)
-        
+
         return {
             "object_key": object_key,
             "url": f"file://{file_path}",
@@ -66,7 +66,7 @@ class LocalStorageClient(BaseStorageClient):
 def get_data_layer() -> SQLAlchemyDataLayer:
     """Create a SQLite-backed data layer for chat persistence."""
     storage_client = LocalStorageClient(str(UPLOADS_DIR))
-    
+
     return SQLAlchemyDataLayer(
         conninfo=f"sqlite+aiosqlite:///{DB_PATH}",
         storage_provider=storage_client,

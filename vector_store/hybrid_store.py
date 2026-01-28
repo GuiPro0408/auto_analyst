@@ -9,7 +9,7 @@ Based on research showing hybrid search outperforms either method alone:
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from api.config import BM25_WEIGHT, DATA_DIR, HYBRID_SEARCH_ENABLED
+from api.config import BM25_WEIGHT, HYBRID_SEARCH_ENABLED
 from api.logging_setup import get_logger
 from api.state import Chunk
 from vector_store.base import ScoredChunk, VectorStore

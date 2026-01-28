@@ -23,11 +23,10 @@ from api.config import (
     TOP_K_RESULTS,
 )
 from api.graph import run_research
-from api.key_rotator import get_default_rotator, reset_default_rotator
+from api.key_rotator import get_default_rotator
 from api.memory import trim_history
 from api.state import ConversationTurn
 from tools.models import load_llm
-from tools.query_classifier import get_query_type_description
 from tools.retriever import build_vector_store
 
 # =============================================================================
@@ -323,13 +322,13 @@ def render_progress_steps(current_step: int):
             step_html += f'<span class="step step-pending">{step}</span>'
         if i < len(steps) - 1:
             step_html += '<span style="color: #666;">→</span>'
-    step_html += '</div>'
+    step_html += "</div>"
     return step_html
 
 
 if run and query.strip():
     start_time = time.time()
-    
+
     # Step 0: Loading models
     st.session_state.progress_step = 0
     progress_placeholder.markdown(render_progress_steps(0), unsafe_allow_html=True)
@@ -346,7 +345,7 @@ if run and query.strip():
     # Step 1-5: Pipeline execution (shown as single step since run_research is atomic)
     st.session_state.progress_step = 1
     progress_placeholder.markdown(render_progress_steps(1), unsafe_allow_html=True)
-    
+
     result = run_research(
         query.strip(),
         llm=llm,
@@ -355,10 +354,10 @@ if run and query.strip():
         top_k=top_k,
         conversation_history=history_turns,
     )
-    
+
     # Record execution time
     st.session_state.execution_time = time.time() - start_time
-    
+
     st.session_state.last_result = result
     st.session_state.conversation_snapshot = [
         turn.to_dict() for turn in result.conversation_history
@@ -375,14 +374,14 @@ if run and query.strip():
             "execution_time": st.session_state.execution_time,
         },
     )
-    
+
     # Show completion
     st.session_state.progress_step = 5
     progress_placeholder.markdown(render_progress_steps(6), unsafe_allow_html=True)
 
 if st.session_state.last_result:
     result = st.session_state.last_result
-    
+
     st.markdown("---")
 
     # ==========================================================================
@@ -394,40 +393,47 @@ if st.session_state.last_result:
     iterations = getattr(result, "adaptive_iterations", 0)
     qc_passes = getattr(result, "qc_passes", 0)
     is_verified = bool(result.verified_answer)
-    
+
     # Query mode as small pill
     query_type = getattr(result, "query_type", "factual")
     mode_icons = {"recommendation": "🎯", "creative": "✨", "factual": "📚"}
-    mode_colors = {"recommendation": "#FF9800", "creative": "#9C27B0", "factual": "#2196F3"}
+    mode_colors = {
+        "recommendation": "#FF9800",
+        "creative": "#9C27B0",
+        "factual": "#2196F3",
+    }
     icon = mode_icons.get(query_type, "📚")
     color = mode_colors.get(query_type, "#2196F3")
-    
-    st.markdown(f"""
+
+    st.markdown(
+        f"""
     <div class="stats-bar">
         <div class="stat-item"><span class="query-mode-pill" style="background: {color}33; color: {color};">{icon} {query_type.title()}</span></div>
         <div class="stat-item">⏱️ <span class="stat-value">{exec_time:.1f}s</span></div>
         <div class="stat-item">📚 <span class="stat-value">{num_sources}</span> sources</div>
         <div class="stat-item">📄 <span class="stat-value">{num_chunks}</span> chunks</div>
         <div class="stat-item">🔄 <span class="stat-value">{iterations}</span> iterations</div>
-        <div class="stat-item">{'✅' if is_verified else '⚠️'} <span class="stat-value">{'Verified' if is_verified else 'Draft'}</span></div>
+        <div class="stat-item">{"✅" if is_verified else "⚠️"} <span class="stat-value">{"Verified" if is_verified else "Draft"}</span></div>
     </div>
-    """, unsafe_allow_html=True)
+    """,
+        unsafe_allow_html=True,
+    )
 
     # ==========================================================================
     # ANSWER SECTION (Primary - show first)
     # ==========================================================================
     answer_text = result.verified_answer or result.draft_answer
-    
+
     # Answer header with copy button
     st.markdown("### 💡 Answer")
-    
+
     # Render the answer
     st.markdown(answer_text)
-    
+
     # Copy button using st.code's built-in copy functionality
     with st.expander("📋 Copy Answer", expanded=False):
         st.code(answer_text, language="markdown")
-    
+
     st.markdown("<br>", unsafe_allow_html=True)
 
     # ==========================================================================
@@ -442,11 +448,17 @@ if st.session_state.last_result:
                 title = cite.get("title", "Source")
                 marker = cite.get("marker", "")
                 if url:
-                    st.markdown(f"""<div class="source-card">
+                    st.markdown(
+                        f"""<div class="source-card">
                         <strong>{marker}</strong> <a href="{url}" target="_blank">{title}</a>
-                    </div>""", unsafe_allow_html=True)
+                    </div>""",
+                        unsafe_allow_html=True,
+                    )
                 else:
-                    st.markdown(f"""<div class="source-card"><strong>{marker}</strong> {title}</div>""", unsafe_allow_html=True)
+                    st.markdown(
+                        f"""<div class="source-card"><strong>{marker}</strong> {title}</div>""",
+                        unsafe_allow_html=True,
+                    )
     else:
         st.info("No sources available.")
 
@@ -458,10 +470,13 @@ if st.session_state.last_result:
     with st.expander(f"📋 Research Plan ({len(result.plan)} tasks)", expanded=False):
         if result.plan:
             for idx, task in enumerate(result.plan, start=1):
-                st.markdown(f"""<div class="plan-task">
+                st.markdown(
+                    f"""<div class="plan-task">
                     <strong>{idx}.</strong> {task.text}
                     <br><small style="color: #888;">— {task.rationale}</small>
-                </div>""", unsafe_allow_html=True)
+                </div>""",
+                    unsafe_allow_html=True,
+                )
         else:
             st.info("No plan generated.")
 
@@ -471,7 +486,7 @@ if st.session_state.last_result:
     with st.expander("🔧 Debug Information", expanded=False):
         # Run info
         st.markdown(f"**Run ID:** `{result.run_id}`")
-        
+
         # Errors & Warnings first (if any)
         if result.errors:
             st.error("**Errors:**\n" + "\n".join(f"• {e}" for e in result.errors))
@@ -479,24 +494,25 @@ if st.session_state.last_result:
             st.warning("**Warnings:**\n" + "\n".join(f"• {w}" for w in result.warnings))
         if getattr(result, "qc_notes", []):
             st.info("**QC Notes:**\n" + "\n".join(f"• {n}" for n in result.qc_notes))
-        
+
         # Search results
         st.markdown("**Search Results:**")
         for r in result.search_results[:10]:
             st.markdown(f"- [{r.title}]({r.url})")
-        
+
         # Retrieved chunks (merged here)
         st.markdown(f"**Retrieved Chunks ({len(result.retrieved)}):**")
         for idx, chunk in enumerate(result.retrieved, start=1):
             meta = chunk.metadata or {}
-            title = html.escape(meta.get('title', 'Source'))
-            url = meta.get('url', '')
+            title = html.escape(meta.get("title", "Source"))
+            url = meta.get("url", "")
             # Escape chunk text to prevent HTML injection
             chunk_preview = html.escape(chunk.text[:400])
             if len(chunk.text) > 400:
                 chunk_preview += "..."
             with st.container():
-                st.markdown(f"""
+                st.markdown(
+                    f"""
                 <div style="background: rgba(255,255,255,0.03); padding: 0.75rem; 
                             border-radius: 8px; margin-bottom: 0.5rem; font-size: 0.85rem;
                             border: 1px solid rgba(255,255,255,0.1);">
@@ -504,7 +520,9 @@ if st.session_state.last_result:
                     {" — <a href='" + url + "' target='_blank'>link</a>" if url else ""}
                     <br><span style="color: #888;">{chunk_preview}</span>
                 </div>
-                """, unsafe_allow_html=True)
+                """,
+                    unsafe_allow_html=True,
+                )
 
 st.markdown("---")
 
@@ -514,10 +532,15 @@ st.markdown("---")
 if st.session_state.history:
     st.markdown(f"### 🕐 Session History ({len(st.session_state.history)} queries)")
     for entry in st.session_state.history:
-        exec_t = entry.get('execution_time', 0)
+        exec_t = entry.get("execution_time", 0)
         time_str = f" • {exec_t:.1f}s" if exec_t else ""
-        with st.expander(f"📝 {entry['query'][:70]}{'...' if len(entry['query']) > 70 else ''}{time_str}"):
-            st.markdown(f"""<div class="answer-container">{entry["answer"]}</div>""", unsafe_allow_html=True)
+        with st.expander(
+            f"📝 {entry['query'][:70]}{'...' if len(entry['query']) > 70 else ''}{time_str}"
+        ):
+            st.markdown(
+                f"""<div class="answer-container">{entry["answer"]}</div>""",
+                unsafe_allow_html=True,
+            )
             if entry["citations"]:
                 st.markdown("<br>**Sources:**", unsafe_allow_html=True)
                 for cite in entry["citations"]:

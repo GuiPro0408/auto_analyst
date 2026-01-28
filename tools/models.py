@@ -633,7 +633,6 @@ class LocalLlamaCppLLM:
 
 
 @lru_cache(maxsize=2)
-@lru_cache(maxsize=2)
 def load_llm(model_name: str = DEFAULT_LLM_MODEL):
     """Load an LLM via cloud API or local llama.cpp backend.
 

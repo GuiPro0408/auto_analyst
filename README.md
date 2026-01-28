@@ -250,11 +250,9 @@ chainlit run ui/chainlit_app.py -w   # Chainlit UI with streaming (http://localh
 |:---------|:--------|:--------|
 | `AUTO_ANALYST_LLM` | `gemini-2.0-flash` | LLM model identifier |
 | `AUTO_ANALYST_LLM_BACKEND` | `gemini` | LLM backend (`gemini`/`groq`/`huggingface`) |
-| `AUTO_ANALYST_EMBED` | `BAAI/bge-small-en-v1.5` | Embedding model |
+| `AUTO_ANALYST_EMBED` | `all-MiniLM-L6-v2` | Embedding model |
 | `AUTO_ANALYST_VECTOR_STORE` | `chroma` | Vector store (`chroma`/`faiss`) |
 | `AUTO_ANALYST_TOP_K` | `12` | Retrieved chunks per query |
-
-> **📝 Note:** The default embedding model was changed from `all-MiniLM-L6-v2` to `BAAI/bge-small-en-v1.5` for improved retrieval quality. ChromaDB automatically detects and rebuilds incompatible vector stores.
 
 <details>
 <summary><strong>🔍 Search Settings</strong></summary>
@@ -360,7 +358,7 @@ chainlit run ui/chainlit_app.py -w   # Chainlit UI with streaming (http://localh
 | `GOOGLE_API_KEY` | Gemini LLM and grounding (single key) |
 | `GOOGLE_API_KEYS` | Multiple Gemini keys for rotation |
 | `GROQ_API_KEY` | Groq LLM backend |
-| `GROQ_MODEL` | Groq model (default: `llama-3.3-70b-versatile`) |
+| `AUTO_ANALYST_GROQ_MODEL` | Groq model (default: `llama-3.3-70b-versatile`) |
 | `HUGGINGFACE_API_TOKEN` | HuggingFace Inference backend |
 | `TAVILY_API_KEY` | Tavily search backend |
 

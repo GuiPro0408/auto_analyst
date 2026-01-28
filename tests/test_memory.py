@@ -1,4 +1,9 @@
-from api.memory import append_turn, resolve_followup_query, summarize_history, trim_history
+from api.memory import (
+    append_turn,
+    resolve_followup_query,
+    summarize_history,
+    trim_history,
+)
 from api.state import ConversationTurn
 
 

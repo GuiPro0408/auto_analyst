@@ -106,7 +106,9 @@ class APIKeyRotator:
     def is_exhausted(self) -> bool:
         """Check if all API keys are currently rate-limited."""
         with self._lock:
-            return len(self._keys) > 0 and len(self._rate_limited_keys) >= len(self._keys)
+            return len(self._keys) > 0 and len(self._rate_limited_keys) >= len(
+                self._keys
+            )
 
     def is_rate_limit_error(self, error: Exception) -> bool:
         """Check if an exception indicates a rate limit error.

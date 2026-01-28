@@ -4,7 +4,7 @@ This module contains utilities for filtering, deduplicating, and validating
 search results before they enter the RAG pipeline.
 """
 
-from typing import Iterable, List, Optional, Set
+from typing import Iterable, List, Set
 
 from api.logging_setup import get_logger
 from api.state import SearchResult

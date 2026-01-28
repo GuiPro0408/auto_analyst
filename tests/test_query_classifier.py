@@ -38,9 +38,9 @@ class TestClassifyQuery:
     def test_classifies_recommendation_queries(self, query):
         """Should classify recommendation queries correctly."""
         result = classify_query(query)
-        assert (
-            result == QUERY_TYPE_RECOMMENDATION
-        ), f"'{query}' should be recommendation"
+        assert result == QUERY_TYPE_RECOMMENDATION, (
+            f"'{query}' should be recommendation"
+        )
 
     # =============================================================================
     # FACTUAL QUERIES

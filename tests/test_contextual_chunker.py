@@ -54,8 +54,9 @@ def sample_chunks(sample_document):
 
 def test_generate_chunk_context_success(sample_document, sample_chunks, monkeypatch):
     """Test successful context generation."""
-    # Disable config check for test
+    # Disable config check for test and force non-limited backend
     monkeypatch.setattr("tools.contextual_chunker.CONTEXTUAL_CHUNKS_ENABLED", True)
+    monkeypatch.setattr("api.backend_utils.LLM_BACKEND", "gemini")
 
     llm = FakeLLM("This chunk is from ACME Corp's Q2 2023 financial report.")
     context = generate_chunk_context(
@@ -83,6 +84,7 @@ def test_generate_chunk_context_invalid_length(
 ):
     """Test that too short/long contexts are rejected."""
     monkeypatch.setattr("tools.contextual_chunker.CONTEXTUAL_CHUNKS_ENABLED", True)
+    monkeypatch.setattr("api.backend_utils.LLM_BACKEND", "gemini")
 
     # Too short
     llm = FakeLLM("Hi")
@@ -98,6 +100,7 @@ def test_generate_chunk_context_invalid_length(
 def test_generate_chunk_context_llm_error(sample_document, sample_chunks, monkeypatch):
     """Test graceful handling of LLM errors."""
     monkeypatch.setattr("tools.contextual_chunker.CONTEXTUAL_CHUNKS_ENABLED", True)
+    monkeypatch.setattr("api.backend_utils.LLM_BACKEND", "gemini")
 
     class FailingLLM:
         def __call__(self, prompt):
@@ -112,6 +115,7 @@ def test_generate_chunk_context_llm_error(sample_document, sample_chunks, monkey
 def test_contextualize_chunks_success(sample_document, sample_chunks, monkeypatch):
     """Test full chunk contextualization."""
     monkeypatch.setattr("tools.contextual_chunker.CONTEXTUAL_CHUNKS_ENABLED", True)
+    monkeypatch.setattr("api.backend_utils.LLM_BACKEND", "gemini")
 
     llm = FakeLLM("Context: ACME Q2 2023 report section.")
     result = contextualize_chunks(sample_document, sample_chunks, llm=llm)
@@ -141,6 +145,7 @@ def test_contextualize_chunks_disabled(sample_document, sample_chunks, monkeypat
 def test_contextualize_chunks_empty_list(sample_document, monkeypatch):
     """Test handling of empty chunk list."""
     monkeypatch.setattr("tools.contextual_chunker.CONTEXTUAL_CHUNKS_ENABLED", True)
+    monkeypatch.setattr("api.backend_utils.LLM_BACKEND", "gemini")
 
     result = contextualize_chunks(sample_document, [], llm=FakeLLM())
     assert result == []

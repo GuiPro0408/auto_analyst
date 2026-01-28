@@ -42,7 +42,7 @@ from tools.quality_control import assess_answer, improve_answer
 from tools.query_classifier import classify_query, get_query_type_description
 from tools.retriever import build_vector_store, chunk_documents
 from tools.reranker import rerank_chunks
-from tools.search import SOURCE_GEMINI_GROUNDING, run_search_tasks
+from tools.search import run_search_tasks
 from tools.smart_search import smart_search
 from tools.chunker import TextChunker
 from tools.models import load_llm
@@ -1060,6 +1060,8 @@ def run_research_streaming(
             if is_complete:
                 draft_answer = partial
                 final_citations = citations
+                # Also emit final token so UI receives the complete answer
+                yield {"type": "token", "text": partial, "phase": "generate"}
             else:
                 yield {"type": "token", "text": partial, "phase": "generate"}
 
@@ -1087,6 +1089,8 @@ def run_research_streaming(
         ):
             if is_complete:
                 verified_answer = partial
+                # Also emit final token so UI receives the complete verified answer
+                yield {"type": "token", "text": partial, "phase": "verify"}
             else:
                 yield {"type": "token", "text": partial, "phase": "verify"}
 

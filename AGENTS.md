@@ -281,21 +281,6 @@ answer = (
 )
 ```
 
-### Fallback Pattern
-
-Always implement fallback when LLM output is unusable:
-
-```python
-def generate_answer(llm, query, retrieved, conversation_context=None):
-    # ... LLM call ...
-    
-    if not _is_coherent(answer):
-        logger.warning("generate_incoherent_answer")
-        answer = _generate_fallback_answer(query, relevant_chunks)
-    
-    return answer, citations
-```
-
 ### Gemini Grounding
 
 For web-augmented responses:
@@ -507,7 +492,9 @@ pytest --cov=api --cov=tools     # With coverage
 | `AUTO_ANALYST_LLM_BACKEND`     | `gemini`           | LLM backend (gemini, huggingface)       |
 | `AUTO_ANALYST_EMBED`           | `all-MiniLM-L6-v2` | Embedding model                         |
 | `AUTO_ANALYST_VECTOR_STORE`    | `chroma`           | Vector store backend                    |
-| `AUTO_ANALYST_SEARCH_BACKENDS` | `gemini_grounding` | Comma-separated search backends         |
+| `AUTO_ANALYST_SEARCH_BACKENDS` | `tavily,gemini_grounding` | Comma-separated search backends  |
+| `AUTO_ANALYST_GROQ_MODEL`      | `llama-3.3-70b-versatile` | Groq model name               |
+| `GROQ_API_KEY`                 | -                  | Groq API key                            |
 | `AUTO_ANALYST_LOG_LEVEL`       | `DEBUG`            | Log level                               |
 | `AUTO_ANALYST_LOG_FORMAT`      | `plain`            | Log format (plain, json)                |
 | `AUTO_ANALYST_LOG_FILE`        | `auto_analyst.log` | Log file path                           |

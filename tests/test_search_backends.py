@@ -42,13 +42,21 @@ def test_run_search_tasks_falls_back_to_gemini(monkeypatch):
 
     # Force search backends to return nothing, ensuring we fall back to Gemini
     monkeypatch.setattr(search, "SEARCH_BACKENDS", ["empty"])
-    monkeypatch.setattr(search, "get_backend", lambda name, **__: GeminiBackend() if name == "gemini_grounding" else EmptyBackend())
+    monkeypatch.setattr(
+        search,
+        "get_backend",
+        lambda name, **__: GeminiBackend()
+        if name == "gemini_grounding"
+        else EmptyBackend(),
+    )
 
     tasks = [search.SearchQuery(text="current premier league standings", rationale="")]
     results, warnings = search.run_search_tasks(tasks, max_results=3)
 
     assert any(r.source == "gemini_grounding" for r in results)
-    assert warnings == [] or warnings == ["No search results found; consider refining the query."]
+    assert warnings == [] or warnings == [
+        "No search results found; consider refining the query."
+    ]
 
 
 def test_run_search_tasks_fallback_chain(monkeypatch):
@@ -94,7 +102,9 @@ def test_run_search_tasks_fallback_chain(monkeypatch):
     results, warnings = search.run_search_tasks(tasks, max_results=3)
 
     assert any(r.source == "tavily" for r in results)
-    assert warnings == [] or warnings == ["No search results found; consider refining the query."]
+    assert warnings == [] or warnings == [
+        "No search results found; consider refining the query."
+    ]
 
 
 def test_run_search_tasks_seed_sports_when_empty(monkeypatch):
@@ -115,7 +125,11 @@ def test_run_search_tasks_seed_sports_when_empty(monkeypatch):
     )
     monkeypatch.setattr(search, "FALLBACK_BACKEND_ORDER", [])
 
-    tasks = [search.SearchQuery(text="premier league standings", rationale="", topic="sports")]
+    tasks = [
+        search.SearchQuery(
+            text="premier league standings", rationale="", topic="sports"
+        )
+    ]
     results, warnings = search.run_search_tasks(tasks, max_results=3)
 
     assert results == []

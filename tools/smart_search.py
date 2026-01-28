@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Optional, Tuple
 
-from api.config import LLM_BACKEND, VALIDATE_RESULTS_ENABLED
+from api.backend_utils import is_local_backend
+from api.config import VALIDATE_RESULTS_ENABLED
 from api.logging_setup import get_logger
 from api.state import SearchQuery, SearchResult
 from tools.models import load_llm
@@ -34,10 +35,6 @@ Example: [1, 2, 3, 4, 5]
 If ALL results are completely off-topic, return: []"""
 
 
-def _is_local_backend() -> bool:
-    return LLM_BACKEND.lower() in {"local", "llama_cpp", "llamacpp"}
-
-
 def _extract_json_payload(text: str) -> str:
     """Extract JSON payload from free-form LLM output."""
     if "```json" in text:
@@ -56,7 +53,7 @@ def analyze_query_with_llm(query: str, run_id: Optional[str] = None) -> Dict[str
     logger = get_logger(__name__, run_id=run_id)
     logger.info("query_analysis_start", extra={"query": query})
 
-    if _is_local_backend():
+    if is_local_backend():
         logger.info("query_analysis_skipped_local_backend")
         return {
             "intent": "general",
@@ -117,7 +114,7 @@ def validate_results_with_llm(
     if not results:
         return []
 
-    if _is_local_backend():
+    if is_local_backend():
         logger.info("result_validation_skipped_local_backend")
         return results
 
@@ -199,9 +196,7 @@ def smart_search(
     elif time_sensitivity == "recent":
         time_range = "week"
 
-    include_domains = analysis.get("authoritative_sources", [])
-
-    # NOTE: Disabled domain filtering - LLM suggestions are often too narrow
+    # NOTE: Domain filtering disabled - LLM suggestions are often too narrow
     # and cause Tavily to return poor/no results. Let Tavily's own relevance
     # ranking do the filtering instead.
     # If results are consistently bad, consider re-enabling with a curated

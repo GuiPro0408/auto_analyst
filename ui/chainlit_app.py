@@ -8,16 +8,13 @@ Run from the project root:
 
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, AsyncGenerator, Dict, Generator, List
+from typing import Any, AsyncGenerator, Dict, Generator, List
 from urllib.parse import urlparse
 
 # Add project root to path for imports
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import chainlit as cl  # type: ignore[import-not-found]
-
-if TYPE_CHECKING:
-    from api.state import ResearchState
 
 # Initialize logging BEFORE Chainlit's logging takes over
 # This ensures our file handler is added
@@ -73,7 +70,6 @@ def get_favicon_url(url: str) -> str:
 
 def build_source_card(marker: str, title: str, url: str, snippet: str = "") -> str:
     """Build a rich source card with favicon."""
-    favicon = get_favicon_url(url) if url else ""
     domain = ""
     if url:
         try:
@@ -220,8 +216,7 @@ async def on_message(message: cl.Message):
     # Create the response message for streaming (will replace researching message)
     response_msg = cl.Message(content="", author="Auto-Analyst")
 
-    # Track current phase for display
-    current_step = None
+    # Track streaming state
     generate_buffer = ""
     verify_buffer = ""
     final_result = None
@@ -290,7 +285,9 @@ async def on_message(message: cl.Message):
                     "fetch": "📄 **Fetching** documents...",
                     "retrieve": "🧠 **Analyzing** content...",
                 }
-                researching_msg.content = f"{step_labels.get(node, '🔍 **Researching...**')}"
+                researching_msg.content = (
+                    f"{step_labels.get(node, '🔍 **Researching...**')}"
+                )
                 await researching_msg.update()
 
             if status == "start":
@@ -368,7 +365,7 @@ async def on_message(message: cl.Message):
                 title = cite.get("title", "Source")
                 url = cite.get("url", "")
                 snippet = snippets.get(url, "")
-                
+
                 if url:
                     card = build_source_card(marker, title, url, snippet)
                     source_cards.append(card)
@@ -380,7 +377,7 @@ async def on_message(message: cl.Message):
                 sources_header = f"### 📚 Sources ({len(source_cards)})\n"
                 sources_header += f"_Research completed in {elapsed_time:.1f}s_\n\n"
                 sources_content = sources_header + "\n\n---\n\n".join(source_cards)
-                
+
                 await cl.Message(
                     content=sources_content,
                     author="Auto-Analyst",

@@ -3,6 +3,7 @@
 import re
 from typing import Dict, List, Optional, Tuple
 
+from api.backend_utils import is_limited_backend, is_local_backend
 from api.config import (
     COHERENCE_MAX_REPETITION_RATIO,
     COHERENCE_MAX_WORD_REPEAT,
@@ -113,15 +114,6 @@ RESPONSE_DELIMITERS = {
 }
 
 
-def _is_local_backend() -> bool:
-    return LLM_BACKEND.lower() in {"local", "llama_cpp", "llamacpp"}
-
-
-def _is_limited_backend() -> bool:
-    """Check if backend has limits that require optimizations."""
-    return LLM_BACKEND.lower() in {"local", "llama_cpp", "llamacpp", "groq"}
-
-
 def _format_context(chunks: List[Chunk]) -> str:
     lines = []
     for idx, chunk in enumerate(chunks):
@@ -130,137 +122,6 @@ def _format_context(chunks: List[Chunk]) -> str:
         url = meta.get("url") or ""
         lines.append(f"[{idx + 1}] {title} ({url}) :: {chunk.text}")
     return "\n".join(lines)
-
-
-def _is_coherent(
-    text: str,
-    min_words: int = COHERENCE_MIN_WORDS,
-    max_repetition_ratio: float = COHERENCE_MAX_REPETITION_RATIO,
-    min_alnum_ratio: float = COHERENCE_MIN_ALNUM_RATIO,
-    max_word_repeat: int = COHERENCE_MAX_WORD_REPEAT,
-) -> bool:
-    """Check if generated text appears coherent and not gibberish.
-
-    Args:
-        text: The text to check.
-        min_words: Minimum word count for detailed checking.
-        max_repetition_ratio: Maximum ratio of any word to total words.
-        min_alnum_ratio: Minimum ratio of alphanumeric characters.
-        max_word_repeat: Maximum times a single word can repeat.
-
-    Returns:
-        True if text appears coherent.
-    """
-    if not text or len(text.strip()) < 10:
-        return False
-
-    # Check for excessive repetition of short patterns
-    words = text.lower().split()
-
-    # Short to medium responses (less than min_words) are usually OK
-    # This allows concise LLM answers through without excessive checking
-    if len(words) < min_words:
-        # Just check for basic gibberish indicators
-        alnum_count = sum(c.isalnum() or c.isspace() for c in text)
-        alnum_ratio = alnum_count / len(text) if text else 0
-        return alnum_ratio > 0.6
-
-    # Count word frequencies
-    word_counts: Dict[str, int] = {}
-    for word in words:
-        cleaned = re.sub(r"[^a-z]", "", word)
-        if len(cleaned) >= 2:
-            word_counts[cleaned] = word_counts.get(cleaned, 0) + 1
-
-    if not word_counts:
-        return False
-
-    # Check if any single word is repeated too frequently (relaxed threshold)
-    total_meaningful = sum(word_counts.values())
-    max_count = max(word_counts.values())
-    if total_meaningful > 10 and max_count / total_meaningful > max_repetition_ratio:
-        return False
-
-    # Check for patterns like "word word word" or "... ... ..."
-    pattern_matches = re.findall(r"(\b\w+\b)(?:\s+\1){3,}", text.lower())  # 3+ repeats
-    if len(pattern_matches) > 2:
-        return False
-
-    # Check for excessive ellipsis or dots (gibberish indicator)
-    dot_count = text.count("...") + text.count("..") + text.count(". . .")
-    if dot_count > 10:
-        return False
-
-    # Check for excessive non-alphanumeric characters (gibberish indicator)
-    alnum_count = sum(c.isalnum() or c.isspace() for c in text)
-    alnum_ratio = alnum_count / len(text) if text else 0
-    if alnum_ratio < min_alnum_ratio:
-        return False
-
-    # If any 3+ letter word appears more than max_word_repeat times, likely gibberish
-    # But allow for technical terms that might repeat naturally in large blocks
-    # Extended allowlist for technical/AI content that legitimately repeats terms
-    technical_allowlist = {
-        # Common English words
-        "the",
-        "and",
-        "that",
-        "this",
-        "with",
-        "from",
-        "for",
-        "are",
-        "can",
-        "has",
-        # AI/ML model names and terms (these repeat in comparison queries)
-        "model",
-        "models",
-        "gemini",
-        "claude",
-        "gpt",
-        "flash",
-        "sonnet",
-        "opus",
-        "llm",
-        "llms",
-        "token",
-        "tokens",
-        "benchmark",
-        "performance",
-        "latency",
-        # Technical terms
-        "api",
-        "data",
-        "code",
-        "test",
-        "context",
-        "output",
-        "input",
-        "response",
-        # Media/entertainment terms
-        "anime",
-        "release",
-        "season",
-        "episode",
-        "series",
-        "movie",
-        "game",
-    }
-    for word, count in word_counts.items():
-        if len(word) >= 3 and count > max_word_repeat:
-            # Check if it's an allowed term that can repeat more frequently
-            if word in technical_allowlist:
-                if count > max_word_repeat * 3:  # Allow 3x more for technical terms
-                    return False
-                continue
-            return False
-
-    # Check for nonsensical number/letter combinations
-    nonsense_patterns = re.findall(r"[a-z]+\d+[a-z]*|\d+[a-z]+\d*", text.lower())
-    if len(nonsense_patterns) > 10:  # Relaxed from 5
-        return False
-
-    return True
 
 
 def _remap_citation_markers(answer: str, index_map: Dict[int, int]) -> str:
@@ -377,9 +238,9 @@ def generate_answer(
         )
 
     # Trim context for backends with token limits
-    if _is_limited_backend():
-        max_chunks = 6 if not _is_local_backend() else 4
-        max_chunk_chars = 800 if not _is_local_backend() else 1200
+    if is_limited_backend():
+        max_chunks = 6 if not is_local_backend() else 4
+        max_chunk_chars = 800 if not is_local_backend() else 1200
         if len(relevant_chunks) > max_chunks:
             logger.info(
                 "generate_limited_trim_chunks",
@@ -413,7 +274,7 @@ def generate_answer(
     )
 
     # Use compact prompt for local backend to reduce token overhead
-    if _is_local_backend():
+    if is_local_backend():
         prompt = PROMPT_LOCAL_COMPACT.format(
             query=query,
             context_block=context_block,
@@ -553,9 +414,9 @@ def generate_answer_stream(
         return
 
     # Trim context for limited backends
-    if _is_limited_backend():
-        max_chunks = 6 if not _is_local_backend() else 4
-        max_chunk_chars = 800 if not _is_local_backend() else 1200
+    if is_limited_backend():
+        max_chunks = 6 if not is_local_backend() else 4
+        max_chunk_chars = 800 if not is_local_backend() else 1200
         trimmed_chunks: List[Chunk] = []
         for chunk in relevant_chunks[:max_chunks]:
             text = chunk.text or ""
@@ -569,7 +430,7 @@ def generate_answer_stream(
     context_block = _format_context(relevant_chunks)
 
     # Build prompt (same logic as generate_answer)
-    if _is_local_backend():
+    if is_local_backend():
         prompt = PROMPT_LOCAL_COMPACT.format(query=query, context_block=context_block)
         response_delimiter = "Answer:"
     else:
@@ -824,255 +685,6 @@ def _clean_snippet(text: str, max_len: int = 300) -> str:
     return text
 
 
-def _extract_key_items(chunks: List[Chunk]) -> List[str]:
-    """Extract named items (anime titles, etc.) from chunks."""
-    items = set()
-
-    # Common anime title patterns
-    title_patterns = [
-        r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*(?:\s+(?:Season|Part)\s+\d+)?)",  # Title Case
-        r"([A-Z][a-z]+(?:'s|:)\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)",  # Possessive/subtitle
-    ]
-
-    for chunk in chunks[:5]:
-        text = chunk.text or ""
-        meta = chunk.metadata or {}
-
-        # Get title from metadata
-        title = meta.get("title", "")
-        if title and "anime" not in title.lower() and len(title) < 80:
-            # Extract potential anime names from article titles
-            for part in re.split(r"[-–:|]", title):
-                part = part.strip()
-                if (
-                    part
-                    and 3 < len(part) < 50
-                    and not part.lower().startswith(
-                        ("best", "new", "top", "winter", "fall")
-                    )
-                ):
-                    items.add(part)
-
-        # Look for known anime patterns in text
-        known_titles = [
-            "Solo Leveling",
-            "The Apothecary Diaries",
-            "Blue Exorcist",
-            "Fate/strange Fake",
-            "Zenshu",
-            "Jujutsu Kaisen",
-            "My Hero Academia",
-            "Attack on Titan",
-            "Demon Slayer",
-            "One Piece",
-            "Naruto",
-            "Hell's Paradise",
-            "Oshi no Ko",
-            "Haikyuu",
-            "Chainsaw Man",
-        ]
-        for known in known_titles:
-            if known.lower() in text.lower():
-                items.add(known)
-
-    return list(items)[:10]
-
-
-def _is_comparison_query(query: str) -> bool:
-    """Detect if query is asking for a comparison between items."""
-    query_lower = query.lower()
-    comparison_keywords = [
-        "compare",
-        "comparison",
-        "vs",
-        "versus",
-        "difference",
-        "differences",
-        "better",
-        "which is",
-        "pros and cons",
-        "advantages",
-        "disadvantages",
-    ]
-    return any(kw in query_lower for kw in comparison_keywords)
-
-
-def _generate_comparison_fallback(query: str, chunks: List[Chunk]) -> str:
-    """Generate a comparison-focused fallback answer with table format."""
-    # Extract entities being compared from query and chunks
-    entities: List[str] = []
-    query_lower = query.lower()
-
-    # Common AI model names to detect
-    model_names = [
-        "gemini",
-        "gpt-4",
-        "gpt-4o",
-        "gpt4",
-        "claude",
-        "sonnet",
-        "opus",
-        "haiku",
-        "llama",
-        "mistral",
-        "palm",
-        "bard",
-        "copilot",
-        "chatgpt",
-        "flash",
-    ]
-    for model in model_names:
-        if model in query_lower:
-            # Capitalize properly
-            if model == "gpt-4" or model == "gpt-4o" or model == "gpt4":
-                entities.append("GPT-4o")
-            elif model == "gemini" or model == "flash":
-                entities.append("Gemini 2.0 Flash")
-            elif model == "claude" or model == "sonnet":
-                entities.append("Claude 3.5 Sonnet")
-            elif model == "opus":
-                entities.append("Claude Opus")
-            else:
-                entities.append(model.title())
-
-    # Deduplicate
-    entities = list(dict.fromkeys(entities))[:4]
-
-    lines = []
-    lines.append(f"**Comparison Summary**\n")
-    lines.append(f"Query: *{query}*\n\n")
-
-    if len(entities) >= 2:
-        # Build comparison table header
-        lines.append("| Aspect | " + " | ".join(entities) + " |\n")
-        lines.append("|" + "---|" * (len(entities) + 1) + "\n")
-
-        # Add placeholder rows based on common comparison aspects
-        aspects = ["Performance", "Speed/Latency", "Cost", "Context Window", "Best For"]
-        for aspect in aspects:
-            row = f"| {aspect} |"
-            for _ in entities:
-                row += " See sources below |"
-            lines.append(row + "\n")
-        lines.append("\n")
-
-    lines.append("### Key Information from Sources\n\n")
-
-    seen_sources = set()
-    source_count = 0
-
-    for chunk in chunks[:6]:
-        meta = chunk.metadata or {}
-        title = meta.get("title", "Source")
-        url = meta.get("url", "")
-
-        source_key = url or title
-        if source_key in seen_sources:
-            continue
-        seen_sources.add(source_key)
-        source_count += 1
-
-        snippet = _clean_snippet(chunk.text or "", max_len=250)
-        if not snippet or len(snippet) < 20:
-            continue
-
-        lines.append(f"**{source_count}. {title}**\n")
-        lines.append(f"> {snippet}\n")
-        if url:
-            lines.append(f"[Read more]({url})\n")
-        lines.append("\n")
-
-    if source_count == 0:
-        return (
-            "I found some comparison sources but couldn't extract meaningful content. "
-            "Please check the linked sources for detailed comparisons."
-        )
-
-    lines.append("---\n")
-    lines.append(
-        "*This comparison summary was generated from retrieved sources. "
-        "For detailed benchmarks and analysis, please visit the linked sources.*"
-    )
-
-    return "".join(lines)
-
-
-def _generate_fallback_answer(query: str, chunks: List[Chunk]) -> str:
-    """Generate a structured, readable answer when LLM is unavailable."""
-    if not chunks:
-        return (
-            "I couldn't find sufficient information to answer your question. "
-            "Please try rephrasing or being more specific."
-        )
-
-    # Check for comparison queries first - use specialized format
-    if _is_comparison_query(query):
-        return _generate_comparison_fallback(query, chunks)
-
-    # Determine if this looks like a recommendation query
-    is_recommendation = any(
-        kw in query.lower()
-        for kw in ["recommend", "suggest", "should", "watch", "best", "top", "good"]
-    )
-
-    # Extract key items mentioned
-    key_items = _extract_key_items(chunks)
-
-    # Build a cleaner answer
-    lines = []
-
-    if is_recommendation and key_items:
-        lines.append(
-            f"**Based on the sources found, here are some options for your query:**\n"
-        )
-        lines.append("### Mentioned Titles\n")
-        for item in key_items[:8]:
-            lines.append(f"- **{item}**\n")
-        lines.append("\n")
-
-    lines.append("### Source Highlights\n")
-
-    seen_sources = set()
-    source_count = 0
-
-    for chunk in chunks[:6]:
-        meta = chunk.metadata or {}
-        title = meta.get("title", "Source")
-        url = meta.get("url", "")
-
-        # Skip duplicate sources
-        source_key = url or title
-        if source_key in seen_sources:
-            continue
-        seen_sources.add(source_key)
-        source_count += 1
-
-        # Clean and format the snippet
-        snippet = _clean_snippet(chunk.text or "", max_len=250)
-        if not snippet or len(snippet) < 20:
-            continue
-
-        lines.append(f"**{source_count}. {title}**\n")
-        lines.append(f"> {snippet}\n")
-        if url:
-            lines.append(f"[Read more]({url})\n")
-        lines.append("\n")
-
-    if not lines or source_count == 0:
-        return (
-            "I found some sources but couldn't extract meaningful content. "
-            "The pages may require JavaScript or have restricted access."
-        )
-
-    lines.append("---\n")
-    lines.append(
-        "*This summary was generated from retrieved sources. "
-        "For detailed information, please visit the linked sources above.*"
-    )
-
-    return "".join(lines)
-
-
 def verify_answer(
     llm,
     draft: str,
@@ -1091,7 +703,7 @@ def verify_answer(
         },
     )
 
-    if _is_limited_backend():
+    if is_limited_backend():
         logger.info("verify_answer_skipped_limited_backend")
         return draft
     if not retrieved:

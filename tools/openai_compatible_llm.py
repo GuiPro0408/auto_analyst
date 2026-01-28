@@ -1,6 +1,5 @@
 """OpenAI-compatible LLM wrapper for Auto-Analyst."""
 
-import json
 from time import perf_counter, sleep
 from typing import Any, Dict, List, Optional
 

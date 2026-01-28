@@ -50,7 +50,7 @@ def summarize_history(
     if not history:
         return ""
 
-    turns = history[-(max_turns or min(3, len(history))):]
+    turns = history[-(max_turns or min(3, len(history))) :]
     lines: List[str] = []
     for idx, turn in enumerate(turns, start=1):
         answer_preview = " ".join(turn.answer.strip().split())
@@ -76,7 +76,9 @@ def append_turn(
         return trim_history(history, max_turns)
 
     new_history = list(history)
-    new_history.append(ConversationTurn(query=query, answer=answer, citations=citations))
+    new_history.append(
+        ConversationTurn(query=query, answer=answer, citations=citations)
+    )
     return trim_history(new_history, max_turns)
 
 

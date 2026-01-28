@@ -13,10 +13,10 @@ def test_plan_query_heuristic():
 def test_plan_query_uses_conversation_context():
     query = "What about its battery warranty?"
     context = "Turn 1: Q: Tell me about Tesla Model 3\nA: Discussion about Tesla."
-    tasks_with_context, _ = plan_query(
-        query, max_tasks=3, conversation_context=context
-    )
+    tasks_with_context, _ = plan_query(query, max_tasks=3, conversation_context=context)
     tasks_without_context, _ = plan_query(query, max_tasks=3)
 
     assert tasks_with_context
-    assert [t.text for t in tasks_with_context] != [t.text for t in tasks_without_context]
+    assert [t.text for t in tasks_with_context] != [
+        t.text for t in tasks_without_context
+    ]

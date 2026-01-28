@@ -2,16 +2,12 @@
 
 from typing import Dict, List, Optional
 
-from api.config import LLM_BACKEND, QC_MIN_RELEVANCE_THRESHOLD
+from api.backend_utils import is_local_backend
+from api.config import QC_MIN_RELEVANCE_THRESHOLD
 from api.logging_setup import get_logger
 from api.state import Chunk
 from tools.generator import generate_answer, verify_answer
 from tools.text_utils import requires_structured_list
-
-
-def _is_local_backend() -> bool:
-    """Check if using local LLM backend (slow inference)."""
-    return LLM_BACKEND.lower() in {"local", "llama_cpp", "llamacpp"}
 
 
 # Phrases that indicate the LLM failed to generate a proper answer
@@ -43,7 +39,7 @@ def assess_answer(
     logger = get_logger(__name__, run_id=run_id)
 
     # Skip QC for local backend - too slow for iterative improvement
-    if _is_local_backend():
+    if is_local_backend():
         logger.info("assess_answer_skipped_local_backend")
         return {"is_good_enough": True, "issues": []}
 
@@ -123,7 +119,7 @@ def improve_answer(
     logger = get_logger(__name__, run_id=run_id)
 
     # Skip improvement for local backend - too slow
-    if _is_local_backend():
+    if is_local_backend():
         logger.info("improve_answer_skipped_local_backend")
         return answer
 

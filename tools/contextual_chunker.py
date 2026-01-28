@@ -10,12 +10,12 @@ document-level information that would otherwise be lost during chunking.
 from time import time
 from typing import List, Optional
 
+from api.backend_utils import is_limited_backend
 from api.config import (
     CONTEXTUAL_CHUNK_CHAR_LIMIT,
     CONTEXTUAL_CHUNKS_ENABLED,
     CONTEXTUAL_DOCUMENT_CHAR_LIMIT,
     CONTEXTUAL_MAX_CHUNKS_PER_DOC,
-    LLM_BACKEND,
 )
 from api.logging_setup import get_logger
 from api.state import Chunk, Document
@@ -53,11 +53,6 @@ _consecutive_failures = 0
 _cooldown_until = 0.0
 
 
-def _is_limited_backend() -> bool:
-    """Check if backend has rate limits that make contextual chunking impractical."""
-    return LLM_BACKEND.lower() in {"local", "llama_cpp", "llamacpp", "groq"}
-
-
 def generate_chunk_context(
     document: Document,
     chunk: Chunk,
@@ -83,7 +78,7 @@ def generate_chunk_context(
         logger.debug("contextual_chunking_disabled")
         return ""
 
-    if _is_limited_backend():
+    if is_limited_backend():
         logger.info("contextual_chunking_skipped_limited_backend")
         return ""
 
@@ -178,7 +173,7 @@ def contextualize_chunks(
         logger.debug("contextual_chunking_disabled_skipping")
         return chunks
 
-    if _is_limited_backend():
+    if is_limited_backend():
         logger.info("contextual_chunking_skipped_limited_backend")
         return chunks
 

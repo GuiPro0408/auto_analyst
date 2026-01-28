@@ -19,7 +19,7 @@ def _parse_lines(text: str) -> List[str]:
     return lines
 
 
-def _current_season(year: int, month: int) -> str:
+def _current_season(_year: int, month: int) -> str:
     if month in (12, 1, 2):
         return "winter"
     if month in (3, 4, 5):
