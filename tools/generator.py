@@ -489,6 +489,227 @@ def generate_answer(
     return answer, citations
 
 
+def generate_answer_stream(
+    llm,
+    query: str,
+    retrieved: List[Chunk],
+    conversation_context: Optional[str] = None,
+    query_type: str = QUERY_TYPE_FACTUAL,
+):
+    """Stream answer generation token by token.
+
+    Yields:
+        Tuple[str, bool, List[Dict[str, str]]]: (partial_text, is_complete, citations)
+        - partial_text: accumulated answer text so far
+        - is_complete: True on final yield
+        - citations: populated only on final yield
+    """
+    from typing import Generator
+
+    logger = get_logger(__name__)
+    logger.info(
+        "generate_answer_stream_start",
+        extra={
+            "query": query,
+            "retrieved_chunks": len(retrieved),
+            "conversation_context": bool(conversation_context),
+            "query_type": query_type,
+        },
+    )
+
+    if not retrieved:
+        logger.warning("generate_answer_stream_no_context", extra={"query": query})
+        yield ("No context retrieved to answer the question.", True, [])
+        return
+
+    # Check if LLM supports streaming
+    if not hasattr(llm, "stream"):
+        logger.info("generate_answer_stream_fallback_to_sync")
+        answer, citations = generate_answer(
+            llm, query, retrieved, conversation_context, query_type
+        )
+        yield (answer, True, citations)
+        return
+
+    # Prepare context (same as generate_answer)
+    query_keywords = extract_keywords(query, stopwords=STOPWORDS)
+    relevant_chunks: List[Chunk] = []
+    for chunk in retrieved:
+        chunk_text = chunk.text or ""
+        chunk_keywords = extract_keywords(chunk_text, stopwords=STOPWORDS)
+        overlap = query_keywords & chunk_keywords
+        if overlap or not query_keywords:
+            relevant_chunks.append(chunk)
+
+    if not relevant_chunks and retrieved:
+        relevant_chunks = retrieved
+
+    if not relevant_chunks:
+        yield (
+            "I could not find relevant information to answer your question.",
+            True,
+            [],
+        )
+        return
+
+    # Trim context for limited backends
+    if _is_limited_backend():
+        max_chunks = 6 if not _is_local_backend() else 4
+        max_chunk_chars = 800 if not _is_local_backend() else 1200
+        trimmed_chunks: List[Chunk] = []
+        for chunk in relevant_chunks[:max_chunks]:
+            text = chunk.text or ""
+            if len(text) > max_chunk_chars:
+                text = text[:max_chunk_chars]
+            trimmed_chunks.append(
+                Chunk(id=chunk.id, text=text, metadata=chunk.metadata)
+            )
+        relevant_chunks = trimmed_chunks
+
+    context_block = _format_context(relevant_chunks)
+
+    # Build prompt (same logic as generate_answer)
+    if _is_local_backend():
+        prompt = PROMPT_LOCAL_COMPACT.format(query=query, context_block=context_block)
+        response_delimiter = "Answer:"
+    else:
+        context_instruction = ""
+        if conversation_context:
+            trimmed_context = " ".join(conversation_context.split())
+            if len(trimmed_context) > 800:
+                trimmed_context = trimmed_context[-800:]
+            context_instruction = (
+                "Prior conversation summary (use for continuity when relevant):\n"
+                f"{trimmed_context}\n\n"
+            )
+
+        list_instruction = ""
+        if requires_structured_list(query):
+            list_instruction = (
+                "- Present the answer as a bullet or numbered list of items. "
+                "For each item include the name/title and any available date/status, "
+                "with an inline citation [n] for that item.\n"
+            )
+
+        prompt_template = PROMPT_TEMPLATES.get(query_type, PROMPT_FACTUAL)
+        response_delimiter = RESPONSE_DELIMITERS.get(query_type, "Answer:")
+
+        prompt = prompt_template.format(
+            list_instruction=list_instruction,
+            context_instruction=context_instruction,
+            query=query,
+            context_block=context_block,
+        )
+
+    # Stream tokens
+    accumulated = ""
+    found_delimiter = False
+
+    for token in llm.stream(prompt):
+        accumulated += token
+
+        # Strip prompt echo once we find delimiter
+        if not found_delimiter and response_delimiter in accumulated:
+            found_delimiter = True
+            accumulated = accumulated.split(response_delimiter, 1)[-1].lstrip()
+
+        # Yield partial (without citations until complete)
+        yield (accumulated, False, [])
+
+    # Final processing
+    final_answer = _strip_references_section(accumulated)
+    final_answer, citations = build_citations(relevant_chunks, final_answer)
+
+    logger.info(
+        "generate_answer_stream_complete",
+        extra={"answer_length": len(final_answer), "citations": len(citations)},
+    )
+    yield (final_answer, True, citations)
+
+
+def verify_answer_stream(
+    llm,
+    draft: str,
+    query: str,
+    retrieved: List[Chunk],
+    conversation_context: Optional[str] = None,
+):
+    """Stream answer verification token by token.
+
+    Yields:
+        Tuple[str, bool]: (partial_text, is_complete)
+        - partial_text: accumulated verified text so far
+        - is_complete: True on final yield
+    """
+    logger = get_logger(__name__)
+    logger.info(
+        "verify_answer_stream_start",
+        extra={
+            "draft_length": len(draft),
+            "retrieved_chunks": len(retrieved),
+        },
+    )
+
+    # Check if LLM supports streaming
+    if not hasattr(llm, "stream"):
+        logger.info("verify_answer_stream_fallback_to_sync")
+        verified = verify_answer(llm, draft, query, retrieved, conversation_context)
+        yield (verified, True)
+        return
+
+    if not retrieved:
+        yield (draft, True)
+        return
+
+    context_block = _format_context(retrieved)
+
+    context_instruction = ""
+    if conversation_context:
+        trimmed_context = " ".join(conversation_context.split())
+        if len(trimmed_context) > 800:
+            trimmed_context = trimmed_context[-800:]
+        context_instruction = (
+            "Prior conversation summary (use for continuity when relevant):\n"
+            f"{trimmed_context}\n\n"
+        )
+
+    prompt = (
+        "You are a fact-checking verifier. Review the draft answer against the provided context. "
+        "Remove or correct any statements that are not directly supported by the context. "
+        "Preserve the structure, formatting (headers, bullet points, lists), and level of detail from the draft. "
+        "Keep inline citations [n] only when the claim is supported by the corresponding context entry. "
+        "Do not shorten or oversimplify the answer - maintain comprehensive coverage.\n\n"
+        f"{context_instruction}"
+        f"User question: {query}\n\n"
+        f"Context:\n{context_block}\n\n"
+        f"Draft answer:\n{draft}\n\n"
+        "Verified answer:"
+    )
+
+    # Stream tokens
+    accumulated = ""
+    found_delimiter = False
+    response_delimiter = "Verified answer:"
+
+    for token in llm.stream(prompt):
+        accumulated += token
+
+        # Strip prompt echo once we find delimiter
+        if not found_delimiter and response_delimiter in accumulated:
+            found_delimiter = True
+            accumulated = accumulated.split(response_delimiter, 1)[-1].lstrip()
+
+        yield (accumulated, False)
+
+    # Final cleanup
+    final_answer = accumulated.strip()
+    logger.info(
+        "verify_answer_stream_complete",
+        extra={"verified_length": len(final_answer)},
+    )
+    yield (final_answer, True)
+
+
 def _strip_references_section(text: str) -> str:
     """Remove LLM-generated References/Sources sections from the answer.
 

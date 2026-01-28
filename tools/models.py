@@ -286,6 +286,103 @@ class GeminiLLM:
             f"{last_error}"
         )
 
+    def stream(self, prompt: str):
+        """Stream tokens from Gemini API.
+
+        Yields:
+            str: Each text chunk as it arrives from the API.
+        """
+        from typing import Generator
+
+        # If we've already switched to fallback, use it directly (non-streaming)
+        if self._using_fallback and self._fallback_llm is not None:
+            self.logger.info(
+                "gemini_stream_using_fallback",
+                extra={"reason": "previously_rate_limited"},
+            )
+            result = self._call_fallback(prompt)
+            yield result[0]["generated_text"]
+            return
+
+        # Check if all keys are exhausted before attempting
+        if self._key_rotator.is_exhausted:
+            if self._fallback_llm is not None:
+                self.logger.warning(
+                    "gemini_stream_all_keys_exhausted_using_fallback",
+                    extra={"total_keys": self._key_rotator.total_keys},
+                )
+                self._using_fallback = True
+                result = self._call_fallback(prompt)
+                yield result[0]["generated_text"]
+                return
+            else:
+                self.logger.error(
+                    "gemini_stream_all_keys_exhausted_no_fallback",
+                    extra={"total_keys": self._key_rotator.total_keys},
+                )
+                yield (
+                    "All Gemini API keys are rate limited and no fallback LLM is configured. "
+                    "Please wait a moment and retry."
+                )
+                return
+
+        current_key = self._key_rotator.current_key
+        if current_key is None:
+            yield "No available Gemini API key."
+            return
+
+        start = perf_counter()
+        try:
+            self._configure_model()
+            # Use streaming API
+            response = self._model.generate_content(
+                prompt,
+                generation_config=self._generation_config,
+                stream=True,
+            )
+
+            total_text = ""
+            for chunk in response:
+                text = getattr(chunk, "text", "")
+                if text:
+                    total_text += text
+                    yield text
+
+            # Success - reset rate limit tracking
+            self._key_rotator.reset()
+
+            duration_ms = (perf_counter() - start) * 1000
+            self.logger.info(
+                "gemini_stream_complete",
+                extra={
+                    "model_name": self._model_name,
+                    "duration_ms": duration_ms,
+                    "output_length": len(total_text),
+                    "available_keys": self._key_rotator.available_keys,
+                },
+            )
+
+        except Exception as exc:
+            if self._key_rotator.is_rate_limit_error(exc):
+                self._key_rotator.mark_rate_limited(current_key or "")
+            if self._fallback_llm is not None:
+                self.logger.warning(
+                    "gemini_stream_error_using_fallback",
+                    extra={
+                        "model_name": self._model_name,
+                        "error": str(exc)[:200],
+                    },
+                )
+                self._using_fallback = True
+                result = self._call_fallback(prompt, exc)
+                yield result[0]["generated_text"]
+            else:
+                self.logger.exception(
+                    "gemini_stream_failed",
+                    extra={"model_name": self._model_name},
+                )
+                yield f"Streaming failed: {exc}"
+
 
 @lru_cache(maxsize=2)
 def load_embedding_model(

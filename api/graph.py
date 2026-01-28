@@ -654,7 +654,11 @@ def build_workflow(
                 f"pass {qc_passes}: issues={assessment['issues']}"
             ]
             if assessment["is_good_enough"] or qc_passes >= QC_MAX_PASSES:
-                status = "accepted" if assessment["is_good_enough"] else "max_iterations_reached"
+                status = (
+                    "accepted"
+                    if assessment["is_good_enough"]
+                    else "max_iterations_reached"
+                )
                 if qc_passes >= QC_MAX_PASSES and not assessment["is_good_enough"]:
                     log.warning(
                         "qc_max_iterations_reached",
@@ -861,3 +865,289 @@ def run_research(
         query, research_state, conversation_history=history_window
     )
     return research_state
+
+
+def run_research_streaming(
+    query: str,
+    llm=None,
+    vector_store: Optional[VectorStore] = None,
+    embed_model: str = DEFAULT_EMBED_MODEL,
+    top_k: int = TOP_K_RESULTS,
+    conversation_history: Optional[List[ConversationTurn]] = None,
+):
+    """Run the research pipeline with streaming support.
+
+    Yields events during pipeline execution:
+        {"type": "step", "node": str, "status": "start"|"complete", "data": dict}
+        {"type": "token", "text": str, "phase": "generate"|"verify"}
+        {"type": "complete", "result": ResearchState}
+
+    Args:
+        query: The research question.
+        llm: Optional LLM instance (created if not provided).
+        vector_store: Optional vector store (created if not provided).
+        embed_model: Embedding model name.
+        top_k: Number of chunks to retrieve.
+        conversation_history: Previous conversation turns.
+
+    Yields:
+        Dict with event type and associated data.
+    """
+    from tools.generator import (
+        build_citations,
+        generate_answer_stream,
+        verify_answer_stream,
+    )
+
+    run_id = str(uuid4())
+    logger = get_logger(__name__, run_id=run_id)
+    overall_start = perf_counter()
+
+    # Normalize and trim conversation history
+    normalized_history = normalize_conversation_history(conversation_history)
+    history_window = trim_history(
+        normalized_history, max_turns=CONVERSATION_MEMORY_TURNS
+    )
+
+    # Check cache first
+    cache_manager = CacheManager(CACHE_DB_PATH, CACHE_TTL_SECONDS, run_id=run_id)
+    cached_result = cache_manager.get_cached_result(
+        query, conversation_history=history_window
+    )
+    if cached_result:
+        yield {"type": "complete", "result": cached_result, "from_cache": True}
+        return
+
+    # Classify the query
+    query_type = classify_query(query, run_id=run_id)
+    logger.info(
+        "streaming_query_classified",
+        extra={"query_type": query_type},
+    )
+
+    # Initialize LLM and store
+    llm = llm or load_llm()
+    store = vector_store or build_vector_store(model_name=embed_model, run_id=run_id)
+
+    # Build the workflow
+    workflow = build_workflow(
+        llm=llm,
+        vector_store=store,
+        embed_model=embed_model,
+        top_k=top_k,
+        run_id=run_id,
+    )
+    initial_state = create_initial_state(query, run_id, history_window, query_type)
+
+    # Node-to-step mapping for progress reporting
+    node_info = {
+        "plan": {"step": 1, "label": "Planning searches"},
+        "search": {"step": 2, "label": "Searching sources"},
+        "fetch": {"step": 3, "label": "Fetching documents"},
+        "retrieve": {"step": 4, "label": "Retrieving context"},
+        "adaptive": {"step": 5, "label": "Assessing context"},
+        "generate": {"step": 6, "label": "Generating answer"},
+        "verify": {"step": 7, "label": "Verifying answer"},
+        "qc": {"step": 8, "label": "Quality check"},
+    }
+
+    # Track state as we stream through the pipeline
+    accumulated_state = dict(initial_state)
+    current_node = None
+
+    # Stream through LangGraph nodes using sync iteration
+    # Note: We use the sync stream() API and emit events
+    for chunk in workflow.stream(
+        cast(GraphState, initial_state), stream_mode="updates"
+    ):
+        # chunk is {node_name: {state_updates}}
+        for node_name, state_update in chunk.items():
+            if node_name == "__start__" or node_name == "__end__":
+                continue
+
+            info = node_info.get(node_name, {"step": 0, "label": node_name})
+
+            # Emit step start
+            yield {
+                "type": "step",
+                "node": node_name,
+                "status": "start",
+                "step": info["step"],
+                "label": info["label"],
+            }
+
+            # Accumulate state
+            accumulated_state.update(state_update)
+
+            # Emit progress info based on node
+            data = {}
+            if node_name == "plan":
+                plan = state_update.get("plan", [])
+                data["task_count"] = len(plan)
+                data["tasks"] = [t.text for t in plan[:3]] if plan else []
+            elif node_name == "search":
+                results = state_update.get("search_results", [])
+                data["result_count"] = len(results)
+                data["sources"] = [r.title for r in results[:5]] if results else []
+            elif node_name == "fetch":
+                docs = state_update.get("documents", [])
+                chunks = state_update.get("chunks", [])
+                data["document_count"] = len(docs)
+                data["chunk_count"] = len(chunks)
+            elif node_name == "retrieve":
+                retrieved = state_update.get("retrieved", [])
+                data["retrieved_count"] = len(retrieved)
+
+            # Emit step complete
+            yield {
+                "type": "step",
+                "node": node_name,
+                "status": "complete",
+                "step": info["step"],
+                "label": info["label"],
+                "data": data,
+            }
+
+    # Now do streaming generation and verification
+    retrieved = accumulated_state.get("retrieved", [])
+    grounded_answer = accumulated_state.get("grounded_answer", "")
+    grounded_sources = accumulated_state.get("grounded_sources", [])
+
+    # If we have a grounded answer, use it directly
+    if grounded_answer and grounded_sources:
+        logger.info("streaming_using_grounded_answer")
+        remapped, citations = build_citations(grounded_sources, grounded_answer)
+        yield {
+            "type": "step",
+            "node": "generate",
+            "status": "start",
+            "step": 6,
+            "label": "Using grounded answer",
+        }
+        yield {"type": "token", "text": remapped, "phase": "generate"}
+        yield {
+            "type": "step",
+            "node": "generate",
+            "status": "complete",
+            "step": 6,
+            "label": "Generating answer",
+            "data": {"answer_length": len(remapped)},
+        }
+        draft_answer = remapped
+        final_citations = citations
+        # Skip verify streaming for grounded answers
+        verified_answer = remapped
+    else:
+        # Stream generate
+        yield {
+            "type": "step",
+            "node": "generate_stream",
+            "status": "start",
+            "step": 6,
+            "label": "Generating answer",
+        }
+
+        history_summary = summarize_history(
+            history_window, max_chars=CONVERSATION_SUMMARY_CHARS
+        )
+        effective_query = resolve_followup_query(query, history_window)
+
+        draft_answer = ""
+        final_citations = []
+        for partial, is_complete, citations in generate_answer_stream(
+            llm, effective_query, retrieved, history_summary, query_type
+        ):
+            if is_complete:
+                draft_answer = partial
+                final_citations = citations
+            else:
+                yield {"type": "token", "text": partial, "phase": "generate"}
+
+        yield {
+            "type": "step",
+            "node": "generate_stream",
+            "status": "complete",
+            "step": 6,
+            "label": "Generating answer",
+            "data": {"answer_length": len(draft_answer)},
+        }
+
+        # Stream verify
+        yield {
+            "type": "step",
+            "node": "verify_stream",
+            "status": "start",
+            "step": 7,
+            "label": "Verifying answer",
+        }
+
+        verified_answer = ""
+        for partial, is_complete in verify_answer_stream(
+            llm, draft_answer, effective_query, retrieved, history_summary
+        ):
+            if is_complete:
+                verified_answer = partial
+            else:
+                yield {"type": "token", "text": partial, "phase": "verify"}
+
+        yield {
+            "type": "step",
+            "node": "verify_stream",
+            "status": "complete",
+            "step": 7,
+            "label": "Verifying answer",
+            "data": {"verified_length": len(verified_answer)},
+        }
+
+    # Build final research state
+    research_state = ResearchState(
+        query=query,
+        run_id=run_id,
+        plan=accumulated_state.get("plan", []),
+        search_results=accumulated_state.get("search_results", []),
+        documents=accumulated_state.get("documents", []),
+        chunks=accumulated_state.get("chunks", []),
+        retrieved=grounded_sources if grounded_sources else retrieved,
+        retrieval_scores=accumulated_state.get("retrieval_scores", []),
+        draft_answer=draft_answer,
+        verified_answer=verified_answer,
+        citations=final_citations,
+        errors=accumulated_state.get("errors", []),
+        warnings=accumulated_state.get("warnings", []),
+        adaptive_iterations=accumulated_state.get("adaptive_iterations", 0),
+        qc_passes=accumulated_state.get("qc_passes", 0),
+        qc_notes=accumulated_state.get("qc_notes", []),
+        time_sensitive=accumulated_state.get("time_sensitive", False),
+        grounded_answer=grounded_answer,
+        grounded_sources=grounded_sources,
+        query_type=query_type,
+    )
+
+    # Update conversation history
+    answer_text = verified_answer or draft_answer
+    updated_history = append_turn(
+        history_window,
+        query=query,
+        answer=answer_text,
+        citations=final_citations,
+        max_turns=CONVERSATION_MEMORY_TURNS,
+    )
+    research_state.conversation_history = updated_history
+
+    # Log completion
+    duration_ms = (perf_counter() - overall_start) * 1000
+    logger.info(
+        "streaming_run_complete",
+        extra={
+            "duration_ms": duration_ms,
+            "citations": len(final_citations),
+            "answer_length": len(answer_text),
+        },
+    )
+
+    # Cache result
+    cache_manager.save_result(
+        query, research_state, conversation_history=history_window
+    )
+
+    yield {"type": "complete", "result": research_state}

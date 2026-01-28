@@ -16,3 +16,5 @@ chromadb/
 .env.*
 auto_analyst.log
 *.log
+
+.chainlit/translations/

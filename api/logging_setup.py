@@ -59,6 +59,8 @@ def _configure_root() -> None:
         NOISY_LOGGERS = (
             "watchdog.observers.inotify_buffer",
             "watchdog.observers",
+            "watchfiles.main",
+            "watchfiles",
             "urllib3.connectionpool",
             "httpcore",
             "httpx",
@@ -140,6 +142,8 @@ def configure_logging(
         NOISY_LOGGERS = (
             "watchdog.observers.inotify_buffer",
             "watchdog.observers",
+            "watchfiles.main",
+            "watchfiles",
             "urllib3.connectionpool",
             "httpcore",
             "httpx",

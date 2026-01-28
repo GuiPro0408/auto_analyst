@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#4CAF50"/>
+      <stop offset="100%" style="stop-color:#2E7D32"/>
+    </linearGradient>
+  </defs>
+  <!-- Background circle -->
+  <circle cx="50" cy="50" r="48" fill="url(#bg)"/>
+  <!-- Microscope/Research icon -->
+  <g fill="white">
+    <!-- Microscope body -->
+    <rect x="42" y="25" width="16" height="8" rx="2"/>
+    <rect x="46" y="33" width="8" height="25" rx="1"/>
+    <!-- Lens -->
+    <circle cx="50" cy="22" r="6" fill="none" stroke="white" stroke-width="3"/>
+    <!-- Base -->
+    <rect x="35" y="58" width="30" height="5" rx="2"/>
+    <rect x="30" y="63" width="40" height="8" rx="3"/>
+    <!-- Sparkle/data points -->
+    <circle cx="28" cy="35" r="3"/>
+    <circle cx="72" cy="40" r="2"/>
+    <circle cx="75" cy="28" r="2.5"/>
+  </g>
+</svg>
