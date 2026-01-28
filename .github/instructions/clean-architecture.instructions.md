@@ -6,17 +6,23 @@ applyTo: "**"
 
 ## Overview
 
-Auto-Analyst follows a clean architecture with strict module boundaries. Each layer has clear responsibilities and import rules.
+Auto-Analyst follows a clean architecture with strict module boundaries. Each layer has clear responsibilities, predictable dependencies, and testability as the default.
 
 ## Module Boundaries
 
-| Directory       | Responsibility                                     | May Import From                       |
-| --------------- | -------------------------------------------------- | ------------------------------------- |
-| `api/`          | Orchestration, state types, config, logging, cache | `tools/`, `vector_store/`             |
-| `tools/`        | Pure functional units (search, parse, generate)    | `api/state.py`, `api/config.py`, `api/logging_setup.py` |
-| `vector_store/` | Storage abstractions (VectorStore interface)       | `api/state.py`, `api/logging_setup.py` |
-| `ui/`           | Streamlit interface                                | All modules                           |
-| `evaluation/`   | RAG metrics                                        | `api/state.py`, `tools/models.py`     |
+| Directory       | Responsibility                                                     | May Import From                                                   |
+| --------------- | ------------------------------------------------------------------ | ----------------------------------------------------------------- |
+| `api/`          | Orchestration, config, logging, cache, memory, state builders       | `tools/`, `vector_store/`                                         |
+| `tools/`        | Stateless pipeline units (plan/search/fetch/parse/chunk/gen/qc/etc.)| `api/state.py`, `api/config.py`, `api/logging_setup.py`           |
+| `vector_store/` | Retrieval backends + scoring/aggregation (Chroma/FAISS/BM25/Hybrid) | `api/state.py`, `api/config.py`, `api/logging_setup.py`           |
+| `ui/`           | User interfaces (Streamlit + Chainlit)                              | All modules (UI is the integration layer)                         |
+| `evaluation/`   | Offline evaluation metrics + runner                                 | `tools/models.py` (embeddings), standard libs                     |
+
+### Import rules (in practice)
+
+- `tools/` must **not** import from `ui/`.
+- `api/` must **not** import from `ui/`.
+- `vector_store/` may read configuration from `api/config.py`, but must not import from `ui/`.
 
 ## Core Principles
 
@@ -33,6 +39,20 @@ Each module handles one concern:
 - `api/memory.py` — Conversation history management
 - `api/state_builder.py` — State construction helpers
 
+Key `tools/` modules:
+
+- `tools/planner.py` — Query decomposition into `SearchQuery` tasks
+- `tools/search.py` / `tools/search_backends.py` — Multi-backend web search
+- `tools/smart_search.py` — LLM-assisted search planning (optional)
+- `tools/search_filters.py` — Result pruning / validation
+- `tools/fetcher.py` / `tools/parser.py` — Fetch + parse (robots-aware)
+- `tools/chunker.py` / `tools/contextual_chunker.py` — Chunking (optionally contextual)
+- `tools/retriever.py` — Store selection + chunk indexing helpers
+- `tools/reranker.py` — Optional reranking
+- `tools/generator.py` — Drafting + citations + verification
+- `tools/quality_control.py` — Runtime quality checks + improvement
+- `tools/query_classifier.py` — Query classification (`query_type`)
+
 ### 2. Dependency Injection
 
 Pass dependencies explicitly rather than creating them internally:
@@ -41,6 +61,7 @@ Pass dependencies explicitly rather than creating them internally:
 # Good: Accept dependencies as parameters
 def run_research(
     query: str,
+    run_id: str,
     llm=None,  # Injectable
     vector_store: Optional[VectorStore] = None,  # Injectable
     embed_model: str = DEFAULT_EMBED_MODEL,
@@ -75,6 +96,14 @@ def my_node(state: GraphState) -> GraphState:
 - Return a new dict with only changed keys
 - Use `.get()` with defaults for optional keys
 
+Prefer **immutable concatenation** when accumulating list fields:
+
+```python
+warnings = state.get("warnings", [])
+warnings = warnings + ["new warning"]
+return {"warnings": warnings}
+```
+
 ### 4. Error Handling in Pipeline
 
 Use the `errors` and `warnings` lists for recoverable issues:
@@ -93,7 +122,7 @@ def node_with_errors(state: Dict) -> Dict:
 
 ### 5. No UI in Core Modules
 
-`tools/` and `api/` must never import from `ui/` or use Streamlit directly.
+`tools/` and `api/` must never import from `ui/` or use Streamlit/Chainlit directly.
 
 ## Pipeline Structure
 
@@ -112,6 +141,11 @@ Key nodes:
 - **generate**: LLM answer generation with citations
 - **verify**: LLM fact-checking against context
 - **qc**: Quality control assessment and improvement
+
+Outside the graph, `run_research()` also performs:
+
+- **cache lookup**: `CacheManager.get_cached_result(query, conversation_history=...)` (conversation history is part of the cache key)
+- **query classification**: `tools/query_classifier.py` sets `query_type` (factual/recommendation/creative) which influences generation
 
 ## Search Backend Architecture
 
@@ -132,6 +166,12 @@ Current implementations:
 - `GeminiGroundingBackend` — Gemini 2.0+ with Google Search grounding
 - `TavilyBackend` — Tavily API for RAG-optimized search
 
+Supporting orchestration modules:
+
+- `tools/search.py` — Executes the planned searches across configured backends
+- `tools/smart_search.py` — Optional LLM-assisted search strategy (`AUTO_ANALYST_SMART_SEARCH=true`)
+- `tools/search_filters.py` — Post-processing: validate/prune results before fetch
+
 ## Caching Architecture
 
 Query results are cached via `CacheManager`:
@@ -140,6 +180,8 @@ Query results are cached via `CacheManager`:
 - TTL-based expiration
 - Skip caching for time-sensitive queries
 - Skip caching for fallback/low-context results
+
+Cache keys include recent conversation history (trimmed) so follow-up questions don’t collide across different chat contexts.
 
 ## Conversation Memory
 
@@ -157,3 +199,6 @@ Multi-turn support via `api/memory.py`:
 3. **Prefer composition** — Build complex behavior from simple functions
 4. **Test in isolation** — Each module should be independently testable
 5. **Log with correlation** — Always pass `run_id` for tracing
+
+6. **Prefer configuration** — New tunables belong in `api/config.py` (with env vars)
+7. **Keep side effects at the edges** — External I/O must be mockable in tests

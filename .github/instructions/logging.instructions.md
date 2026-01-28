@@ -24,6 +24,8 @@ log = get_logger("api.graph.plan", run_id=state.get("run_id"))
 
 **Never use `logging.getLogger()` directly** — it bypasses the centralized configuration.
 
+Note: `get_logger()` returns a `LoggerAdapter` when a `run_id` is provided.
+
 ## Run Correlation IDs
 
 Every research run gets a UUID (`run_id`) that flows through all pipeline stages:
@@ -131,6 +133,22 @@ AUTO_ANALYST_LOG_REDACT_QUERIES=true
 ```
 
 This redacts sensitive fields (`query`, `task_queries`, `urls`) in log output.
+
+Important: redaction only applies to structured fields on the record. Do **not** put secrets or sensitive user text into the log *message* itself.
+
+## Programmatic Configuration
+
+You can override env-var defaults at runtime:
+
+```python
+from api.logging_setup import configure_logging
+
+configure_logging(level="INFO", log_format="json", redact_queries=True)
+```
+
+## Noise Filtering
+
+The logging setup includes a small noise filter to suppress DEBUG logs from common third-party libraries (e.g. `urllib3`, `httpx`). Keep it that way—if you need more detail, raise log level for a specific logger instead of globally enabling noisy DEBUG output.
 
 ## Best Practices
 

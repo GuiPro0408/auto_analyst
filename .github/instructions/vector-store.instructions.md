@@ -13,7 +13,7 @@ All vector store backends implement the abstract interface in `vector_store/base
 ```python
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional
 
 from api.state import Chunk
 
@@ -29,7 +29,7 @@ class VectorStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def query(self, text: str, top_k: int = 5) -> List[ScoredChunk]:
+    def query(self, text: str, top_k: int = 5, *, run_id: Optional[str] = None) -> List[ScoredChunk]:
         """Return top_k most similar chunks with scores."""
         raise NotImplementedError
 
@@ -44,6 +44,8 @@ class VectorStore(ABC):
 | ------------------- | ----------------- | ------------------------------------ |
 | `ChromaVectorStore` | `chroma_store.py` | Default, persistent local storage    |
 | `FaissVectorStore`  | `faiss_store.py`  | In-memory, faster for small datasets |
+| `BM25Store`         | `bm25_store.py`   | Lexical keyword search (exact match) |
+| `HybridVectorStore` | `hybrid_store.py` | Hybrid BM25 + embeddings (RRF fusion)|
 
 ### ChromaVectorStore
 
@@ -51,6 +53,7 @@ class VectorStore(ABC):
 - Run-isolated collections (appends `run_id` to collection name)
 - Uses ChromaDB's built-in sentence-transformer embedding
 - Cosine similarity via `hnsw:space` metadata
+- Converts Chroma cosine *distance* to similarity score in [0, 1]
 
 ```python
 class ChromaVectorStore(VectorStore):
@@ -69,10 +72,21 @@ class ChromaVectorStore(VectorStore):
 - In-memory storage (no persistence)
 - Uses FAISS IndexFlatIP for inner product similarity
 - Normalizes vectors for cosine similarity behavior
+### BM25Store
+
+- In-memory lexical index using `rank_bm25.BM25Okapi`
+- Rebuilds BM25 index on upsert (fine for the per-run, small-to-medium corpora)
+- Normalizes BM25 scores to [0, 1]
+
+### HybridVectorStore
+
+- Combines `ChromaVectorStore` (semantic) + `BM25Store` (lexical)
+- Uses Reciprocal Rank Fusion (RRF) to merge ranked lists
+- Enabled by default via `AUTO_ANALYST_HYBRID_SEARCH=true`
 
 ```python
 class FaissVectorStore(VectorStore):
-    def __init__(self, model_name: str) -> None:
+    def __init__(self, model_name: str, run_id: Optional[str] = None) -> None:
         self.embedder = load_embedding_model(model_name=model_name)
         self.index = faiss.IndexFlatIP(dim)
         self.chunks: List[Chunk] = []
@@ -85,6 +99,7 @@ Controlled via environment variable:
 ```python
 # api/config.py
 VECTOR_STORE_BACKEND = os.getenv("AUTO_ANALYST_VECTOR_STORE", "chroma")
+HYBRID_SEARCH_ENABLED = os.getenv("AUTO_ANALYST_HYBRID_SEARCH", "true").lower() == "true"
 ```
 
 Factory function in `tools/retriever.py`:
@@ -94,8 +109,11 @@ def build_vector_store(
     model_name: str = DEFAULT_EMBED_MODEL, run_id: Optional[str] = None
 ) -> VectorStore:
     backend = VECTOR_STORE_BACKEND.lower()
+    # Hybrid takes precedence when enabled (except when explicitly using faiss)
+    if HYBRID_SEARCH_ENABLED and backend not in ("faiss",):
+        return HybridVectorStore(model_name=model_name, run_id=run_id)
     if backend == "faiss":
-        return FaissVectorStore(model_name=model_name)
+        return FaissVectorStore(model_name=model_name, run_id=run_id)
     return ChromaVectorStore(model_name=model_name, run_id=run_id)
 ```
 
@@ -128,7 +146,7 @@ class NewVectorStore(VectorStore):
             self._storage[chunk.id] = (chunk, emb)
         self.logger.info("new_store_upsert_complete", extra={"chunk_count": len(chunks)})
 
-    def query(self, text: str, top_k: int = 5) -> List[ScoredChunk]:
+    def query(self, text: str, top_k: int = 5, *, run_id: Optional[str] = None) -> List[ScoredChunk]:
         self.logger.debug("new_store_query_start", extra={"query_length": len(text)})
         query_emb = self.embedder.encode([text], convert_to_numpy=True)[0]
         # Compute similarities, sort, return top_k
@@ -193,12 +211,24 @@ self.collection_name = f"{collection_name}-{run_id}" if run_id else collection_n
 
 This prevents cross-contamination between concurrent runs.
 
+Hybrid and BM25 stores are also run-scoped in practice (they are created per `run_id` in `build_vector_store()`).
+
 ## Scoring
 
-- **ChromaDB**: Returns distances (0-1 for cosine), converted to similarity as `1.0 - distance`
-- **FAISS**: Returns inner product scores directly (vectors are normalized)
+- **ChromaDB**: Returns cosine *distances*; converted to similarity in [0, 1] as `1.0 - (distance / 2.0)`
+- **FAISS**: Returns inner product scores (vectors are normalized for cosine-like behavior)
+- **BM25**: Scores are normalized to [0, 1] by dividing by the max score for the query
+- **Hybrid**: RRF scores are normalized to [0, 1]
 
-Both backends return `ScoredChunk` with `score` in range [0, 1] where higher is better.
+All backends return `ScoredChunk` with `score` in range [0, 1] where higher is better.
+
+## Environment Variables
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `AUTO_ANALYST_VECTOR_STORE` | `chroma` | Vector store backend (`chroma`, `faiss`) |
+| `AUTO_ANALYST_HYBRID_SEARCH` | `true` | Enable Hybrid retrieval (Chroma + BM25) when backend supports it |
+| `AUTO_ANALYST_BM25_WEIGHT` | `0.3` | Weight of BM25 list in RRF fusion (0.0–1.0) |
 
 ## Testing New Backends
 

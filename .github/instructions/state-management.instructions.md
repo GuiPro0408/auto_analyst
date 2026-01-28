@@ -66,6 +66,7 @@ class ResearchState:
     documents: List[Document] = field(default_factory=list)
     chunks: List[Chunk] = field(default_factory=list)
     retrieved: List[Chunk] = field(default_factory=list)
+    retrieval_scores: List[float] = field(default_factory=list)
     draft_answer: str = ""
     verified_answer: str = ""
     citations: List[Dict[str, str]] = field(default_factory=list)
@@ -76,6 +77,9 @@ class ResearchState:
     qc_notes: List[str] = field(default_factory=list)
     time_sensitive: bool = False
     conversation_history: List[ConversationTurn] = field(default_factory=list)
+    grounded_answer: str = ""
+    grounded_sources: List[Chunk] = field(default_factory=list)
+    query_type: str = "factual"  # factual, recommendation, or creative
 
     def add_error(self, message: str) -> None:
         self.errors.append(message)
@@ -105,6 +109,7 @@ class GraphState(TypedDict, total=False):
     conversation_history: List[ConversationTurn]
     grounded_answer: str  # Direct answer from Gemini grounding
     grounded_sources: List[Chunk]  # Sources from grounding for citations
+    query_type: str  # Query classification: factual, recommendation, creative
 ```
 
 ## Adding New Data to the Pipeline
@@ -130,7 +135,7 @@ class GraphState(TypedDict, total=False):
 3. Initialize in `create_initial_state()` in `api/state_builder.py`:
 
    ```python
-   def create_initial_state(query: str, run_id: str, history: List) -> Dict:
+   def create_initial_state(query: str, run_id: str, history: List, query_type: str = "factual") -> Dict:
        return {
            ...
            "new_field": "",  # Match the default

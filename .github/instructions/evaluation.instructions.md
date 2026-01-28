@@ -34,6 +34,8 @@ def _cosine(a: np.ndarray, b: np.ndarray) -> float:
 def _embed_texts(texts: Iterable[str], model_name: str) -> np.ndarray:
     embedder = load_embedding_model(model_name=model_name)
     return embedder.encode(list(texts), convert_to_numpy=True, show_progress_bar=False)
+
+Some metric functions accept optional `precomputed_embeddings` to avoid recomputing embeddings when you already have them (e.g., in batch evaluations).
 ```
 
 ## Batch Evaluation
@@ -52,6 +54,8 @@ results = evaluate_all(
     thresholds=(0.5, 0.4)  # (sufficiency_threshold, hallucination_threshold)
 )
 # Returns: {"context_relevance": 0.8, "context_sufficiency": 0.6, ...}
+
+Implementation note: `evaluate_all()` embeds all required texts in a single batch (question/answer/reference/contexts/sentences) and slices the embedding matrix by position.
 ```
 
 ## Evaluation Dataset Format

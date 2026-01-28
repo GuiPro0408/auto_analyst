@@ -57,7 +57,7 @@ class FakeVectorStore(VectorStore):
     def upsert(self, chunks):
         self.chunks.extend(chunks)
 
-    def query(self, text, top_k: int = 5):
+    def query(self, text, top_k: int = 5, *, run_id=None):
         return [ScoredChunk(chunk=c, score=1.0) for c in self.chunks[:top_k]]
 ```
 
@@ -90,15 +90,20 @@ def test_something(monkeypatch):
 | Test File                    | Purpose                                  |
 | ---------------------------- | ---------------------------------------- |
 | `test_end_to_end.py`         | Full pipeline integration with all mocks |
+| `test_adaptive_research.py`  | Adaptive refinement heuristics           |
 | `test_planner.py`            | Planner heuristics and time detection    |
 | `test_generator.py`          | Answer generation and verification       |
 | `test_chunker.py`            | Token-aware text chunking                |
+| `test_contextual_chunker.py` | Contextual chunking behavior             |
 | `test_vector_store.py`       | VectorStore implementations              |
+| `test_hybrid_store.py`       | Hybrid BM25 + embedding retrieval        |
 | `test_parser.py`             | HTML/PDF parsing                         |
 | `test_fetcher.py`            | URL fetching and robots.txt              |
 | `test_fetcher_robots.py`     | Robots.txt compliance                    |
 | `test_evaluation_metrics.py` | RAG metrics calculations                 |
 | `test_search_backends.py`    | Search backend implementations           |
+| `test_search_filters.py`     | Search result validation/pruning         |
+| `test_search_pruned.py`      | Pruned-results edge cases                |
 | `test_gemini_grounding.py`   | Gemini grounding integration             |
 | `test_smart_search.py`       | LLM-powered search pipeline              |
 | `test_grounded_fastpath.py`  | Grounded answer fast path                |
@@ -108,6 +113,7 @@ def test_something(monkeypatch):
 | `test_models.py`             | LLM loading and wrappers                 |
 | `test_refactored_modules.py` | State builder utilities                  |
 | `test_chroma_store_isolation.py` | ChromaDB isolation testing          |
+| `test_streaming.py`          | Streaming output behavior                |
 
 ## Required Imports
 

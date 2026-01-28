@@ -6,7 +6,12 @@ applyTo: "**"
 
 ## Overview
 
-Auto-Analyst uses Gemini as the primary LLM backend via the `google-genai` SDK, with HuggingFace Inference API as an optional fallback. All LLM interactions go through `tools/models.py`.
+Auto-Analyst loads LLM backends via `tools/models.py` and enforces a single call contract compatible with HuggingFace pipeline output.
+
+Important distinction:
+
+- **LLM (chat/generation)** uses `google-generativeai` (`google.generativeai`) for Gemini in `tools/models.py`.
+- **Web grounding (Google Search tool)** uses the newer `google-genai` SDK in `tools/gemini_grounding.py`.
 
 ## LLM Backends
 
@@ -21,16 +26,43 @@ llm = load_llm()  # Uses DEFAULT_LLM_MODEL (gemini-2.0-flash)
 The `GeminiLLM` class handles:
 - API key rotation via `APIKeyRotator` for rate limit handling
 - Multiple API keys support (`GOOGLE_API_KEYS` env var)
-- Automatic fallback to secondary LLM on exhaustion
+- Automatic fallback to secondary LLM on exhaustion (Groq → HF → Local, when configured)
 - HuggingFace-compatible output format
+
+Gemini also supports streaming via `GeminiLLM.stream(prompt)` which yields incremental text chunks.
+
+### Groq (Optional)
+
+Groq is supported via an OpenAI-compatible wrapper:
+
+- `tools/openai_compatible_llm.py` implements `OpenAICompatibleLLM`
+- configured by `AUTO_ANALYST_LLM_BACKEND=groq` + `GROQ_API_KEY`
+
+### Local llama.cpp (Optional)
+
+Local GGUF models are supported via `llama-cpp-python` when:
+
+- `AUTO_ANALYST_LLM_BACKEND=local` (or `llama_cpp` / `llamacpp`)
+- `AUTO_ANALYST_LOCAL_MODEL_PATH=/path/to/model.gguf`
+
+The local backend is also used as the **final fallback** when configured.
 
 ### HuggingFace Inference (Fallback)
 
 ```python
-from tools.models import load_huggingface_llm
+from tools.models import HuggingFaceInferenceLLM
+from api.config import HUGGINGFACE_API_TOKEN, HUGGINGFACE_INFERENCE_MODEL, GENERATION_KWARGS
 
-hf_llm = load_huggingface_llm()  # Uses HUGGINGFACE_INFERENCE_MODEL
+hf_llm = HuggingFaceInferenceLLM(
+    model_name=HUGGINGFACE_INFERENCE_MODEL,
+    api_token=HUGGINGFACE_API_TOKEN,
+    generation_kwargs=GENERATION_KWARGS,
+)
+
+Note: the HuggingFace backend uses `huggingface_hub.InferenceClient.chat_completion(...)`.
 ```
+
+In normal operation you typically don’t instantiate this directly: `load_llm()` will build it automatically when `HUGGINGFACE_API_TOKEN` is configured (as a fallback, or as the primary backend when `AUTO_ANALYST_LLM_BACKEND=huggingface`).
 
 ## Call Contract
 
@@ -41,6 +73,14 @@ result = llm(prompt)[0]["generated_text"]
 ```
 
 This returns a list containing a dict with `generated_text` key, matching HuggingFace pipeline format. Both Gemini and HuggingFace backends conform to this interface.
+
+### Streaming (optional)
+
+Some backends expose streaming in addition to the standard call contract:
+
+- `GeminiLLM.stream(prompt)` yields `str` chunks
+
+UIs should prefer streaming when available, but must fall back to non-streaming safely.
 
 ## Prompt Templates
 
@@ -200,7 +240,7 @@ Generation parameters in `api/config.py`:
 
 ```python
 GENERATION_KWARGS = {
-    "max_new_tokens": 1024,
+    "max_new_tokens": 1536,
     "temperature": 0.4,
     "do_sample": True,
 }
@@ -211,9 +251,15 @@ GENERATION_KWARGS = {
 | Variable                      | Default                              | Description                    |
 | ----------------------------- | ------------------------------------ | ------------------------------ |
 | `AUTO_ANALYST_LLM`            | `gemini-2.0-flash`                   | Default LLM model              |
-| `AUTO_ANALYST_LLM_BACKEND`    | `gemini`                             | LLM backend (gemini/huggingface) |
+| `AUTO_ANALYST_LLM_BACKEND`    | `gemini`                             | LLM backend (`gemini`, `groq`, `huggingface`, `local`) |
 | `AUTO_ANALYST_GEMINI_MODEL`   | `gemini-2.0-flash`                   | Gemini model name              |
 | `GOOGLE_API_KEY`              | -                                    | Single Gemini API key          |
 | `GOOGLE_API_KEYS`             | -                                    | Comma-separated API keys       |
+| `GROQ_API_KEY`                | -                                    | Groq API key (OpenAI-compatible) |
+| `AUTO_ANALYST_GROQ_MODEL`      | `llama-3.3-70b-versatile`            | Groq model name                |
 | `HUGGINGFACE_API_TOKEN`       | -                                    | HuggingFace API token          |
 | `AUTO_ANALYST_HF_INFERENCE_MODEL` | `mistralai/Mixtral-8x7B-Instruct-v0.1` | HuggingFace model        |
+| `AUTO_ANALYST_LOCAL_MODEL_PATH` | -                                  | Local GGUF model path (llama.cpp) |
+| `AUTO_ANALYST_LOCAL_LLM_N_CTX` | `4096`                               | Local context window            |
+| `AUTO_ANALYST_LOCAL_LLM_N_GPU_LAYERS` | `35`                        | Local GPU layers (if supported) |
+| `AUTO_ANALYST_LOCAL_LLM_N_THREADS` | `8`                             | Local CPU threads              |
