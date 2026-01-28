@@ -452,8 +452,3 @@ async def on_chat_resume(thread):
     cl.user_session.set("top_k", TOP_K_RESULTS)
     cl.user_session.set("llm_model", DEFAULT_LLM_MODEL)
     cl.user_session.set("embed_model", DEFAULT_EMBED_MODEL)
-
-
-if __name__ == "__main__":
-    # For development: run with `chainlit run ui/chainlit_app.py -w`
-    print("Run with: chainlit run ui/chainlit_app.py -w")

@@ -128,18 +128,6 @@ CACHE_TTL_SECONDS = int(os.getenv("AUTO_ANALYST_CACHE_TTL", "7200"))
 CACHE_MAX_ENTRIES = int(os.getenv("AUTO_ANALYST_CACHE_MAX_ENTRIES", "1000"))
 
 # =============================================================================
-# GENERATOR CONFIGURATION (coherence thresholds)
-# =============================================================================
-COHERENCE_MIN_WORDS = int(os.getenv("AUTO_ANALYST_COHERENCE_MIN_WORDS", "20"))
-COHERENCE_MAX_REPETITION_RATIO = float(
-    os.getenv("AUTO_ANALYST_COHERENCE_MAX_REPETITION", "0.4")
-)
-COHERENCE_MIN_ALNUM_RATIO = float(os.getenv("AUTO_ANALYST_COHERENCE_MIN_ALNUM", "0.65"))
-COHERENCE_MAX_WORD_REPEAT = int(
-    os.getenv("AUTO_ANALYST_COHERENCE_MAX_WORD_REPEAT", "8")
-)
-
-# =============================================================================
 # RERANKER CONFIGURATION
 # =============================================================================
 ENABLE_RERANKER = os.getenv("AUTO_ANALYST_ENABLE_RERANK", "true").lower() == "true"

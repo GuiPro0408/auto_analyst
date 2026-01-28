@@ -4,13 +4,7 @@ import re
 from typing import Dict, List, Optional, Tuple
 
 from api.backend_utils import is_limited_backend, is_local_backend
-from api.config import (
-    COHERENCE_MAX_REPETITION_RATIO,
-    COHERENCE_MAX_WORD_REPEAT,
-    COHERENCE_MIN_ALNUM_RATIO,
-    COHERENCE_MIN_WORDS,
-    LLM_BACKEND,
-)
+from api.config import LLM_BACKEND
 from api.logging_setup import get_logger
 from api.state import Chunk
 from tools.text_utils import STOPWORDS, extract_keywords, requires_structured_list

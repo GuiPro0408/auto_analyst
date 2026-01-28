@@ -206,15 +206,6 @@ GENERATION_KWARGS = {
 }
 ```
 
-Coherence thresholds:
-
-```python
-COHERENCE_MIN_WORDS = 20
-COHERENCE_MAX_REPETITION_RATIO = 0.4
-COHERENCE_MIN_ALNUM_RATIO = 0.65
-COHERENCE_MAX_WORD_REPEAT = 8
-```
-
 ## Environment Variables
 
 | Variable                      | Default                              | Description                    |
