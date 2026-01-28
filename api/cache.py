@@ -248,13 +248,3 @@ class QueryCache:
             conn.execute("DELETE FROM query_cache")
             conn.commit()
         self.logger.info("query_cache_purged")
-
-    def keys(self) -> List[str]:
-        with self._lock, sqlite3.connect(self.db_path) as conn:
-            rows = conn.execute("SELECT cache_key FROM query_cache").fetchall()
-        return [row[0] for row in rows]
-
-    def size(self) -> int:
-        """Return current number of entries in cache."""
-        with self._lock, sqlite3.connect(self.db_path) as conn:
-            return conn.execute("SELECT COUNT(*) FROM query_cache").fetchone()[0]

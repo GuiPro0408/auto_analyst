@@ -57,19 +57,18 @@ ASSISTANT_AVATAR = "/public/assistant.svg"
 USER_AVATAR = "/public/user.svg"
 
 
-def get_favicon_url(url: str) -> str:
-    """Get favicon URL for a given website URL."""
-    try:
-        parsed = urlparse(url)
-        domain = parsed.netloc or parsed.path.split("/")[0]
-        # Use Google's favicon service for reliable favicon fetching
-        return f"https://www.google.com/s2/favicons?domain={domain}&sz=32"
-    except Exception:
-        return ""
-
-
 def build_source_card(marker: str, title: str, url: str, snippet: str = "") -> str:
-    """Build a rich source card with favicon."""
+    """Build a rich source card with favicon and snippet.
+
+    Args:
+        marker: The citation marker (e.g., "[1]").
+        title: The title of the source.
+        url: The URL of the source.
+        snippet: An optional snippet of text from the source.
+
+    Returns:
+        A markdown string representing the source card.
+    """
     domain = ""
     if url:
         try:

@@ -10,7 +10,6 @@ from tools.generator import (
     build_citations,
     generate_answer,
     verify_answer,
-    _clean_snippet,
 )
 from tests.conftest import FakeLLM, CapturingLLM
 
@@ -129,24 +128,3 @@ def test_build_citations_deduplicates_urls():
     assert len(urls) == 1
     assert urls[0] == "http://example.com"
     assert all(isinstance(c, dict) for c in citations)
-
-
-class TestCleanSnippet:
-    """Tests for the _clean_snippet utility function."""
-
-    @pytest.mark.unit
-    def test_clean_snippet_removes_noise(self):
-        """Clean snippet should remove rating codes and boilerplate."""
-        raw = "5.80 4.4K Add to My List StudioILCA Source Original Great anime content here."
-        cleaned = _clean_snippet(raw)
-        assert "5.80" not in cleaned
-        assert "Add to My List" not in cleaned
-        assert "content" in cleaned.lower()
-
-    @pytest.mark.unit
-    def test_clean_snippet_preserves_sentences(self):
-        """Clean snippet should preserve complete sentences."""
-        raw = "This is a complete sentence. Here is another one. And a third."
-        cleaned = _clean_snippet(raw, max_len=50)
-        # Should end at a sentence boundary, not mid-word
-        assert cleaned.endswith(".") or cleaned.endswith("...")
