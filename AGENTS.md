@@ -9,13 +9,13 @@ Minimal agent index for working in Auto-Analyst.
 | Project overview, setup, runtime, architecture | `README.md` |
 | Canonical command surface | `Makefile` |
 | CI checks and environment | `.github/workflows/ci.yml` |
-| Architecture boundaries | `.github/instructions/clean-architecture.instructions.md` |
-| State and pipeline patterns | `.github/instructions/state-management.instructions.md` |
-| Logging contract | `.github/instructions/logging.instructions.md` |
-| LLM integration contract | `.github/instructions/llm-integration.instructions.md` |
-| Vector store patterns | `.github/instructions/vector-store.instructions.md` |
-| Testing patterns | `.github/instructions/testing.instructions.md` |
-| Evaluation patterns | `.github/instructions/evaluation.instructions.md` |
+| Architecture boundaries | `docs/instructions/clean-architecture.md` |
+| State and pipeline patterns | `docs/instructions/state-management.md` |
+| Logging contract | `docs/instructions/logging.md` |
+| LLM integration contract | `docs/instructions/llm-integration.md` |
+| Vector store patterns | `docs/instructions/vector-store.md` |
+| Testing patterns | `docs/instructions/testing.md` |
+| Evaluation patterns | `docs/instructions/evaluation.md` |
 
 ## Golden Commands
 

@@ -631,7 +631,7 @@ chainlit run ui/chainlit_app.py -w
 | 🆓 | **No paid APIs required** — uses Gemini free tier, open-source models |
 | 🤖 | **robots.txt compliance** — fetcher respects site restrictions |
 | 🔄 | **Automatic model migration** — ChromaDB detects and rebuilds incompatible embeddings |
-| 📚 | See `.github/instructions/*.md` for technical implementation guidance |
+| 📚 | See `docs/instructions/*.md` for technical implementation guidance |
 | 🔍 | Adaptive research: automatically broadens search when context is thin |
 | ✨ | Quality control: optional refinement loop to improve answers |
 
