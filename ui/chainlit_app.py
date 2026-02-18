@@ -257,19 +257,27 @@ async def on_message(message: cl.Message):
                     step.output = " | ".join(output_parts)
             await step.__aexit__(None, None, None)
 
-    # Stream through the research pipeline
+    # Stream through the research pipeline.
+    # Backward compatibility: if an older runtime doesn't accept run_id, retry without it.
+    stream_kwargs = {
+        "query": query,
+        "llm": llm,
+        "vector_store": store,
+        "embed_model": embed_model,
+        "top_k": top_k,
+        "conversation_history": history_turns,
+        "run_id": run_id,
+    }
+    try:
+        stream_iter = run_research_streaming(**stream_kwargs)
+    except TypeError as exc:
+        if "unexpected keyword argument 'run_id'" not in str(exc):
+            raise
+        stream_kwargs.pop("run_id", None)
+        stream_iter = run_research_streaming(**stream_kwargs)
+
     event: Dict[str, Any]
-    async for event in async_generator_wrapper(
-        run_research_streaming(
-            query,
-            llm=llm,
-            vector_store=store,
-            embed_model=embed_model,
-            top_k=top_k,
-            conversation_history=history_turns,
-            run_id=run_id,
-        )
-    ):
+    async for event in async_generator_wrapper(stream_iter):
         event_type = event.get("type")
 
         if event_type == "step":
