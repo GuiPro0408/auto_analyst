@@ -15,6 +15,17 @@ from urllib.parse import urlparse
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import chainlit as cl  # type: ignore[import-not-found]
+from api.config import (
+    CONVERSATION_MEMORY_TURNS,
+    DEFAULT_EMBED_MODEL,
+    DEFAULT_LLM_MODEL,
+    TOP_K_RESULTS,
+)
+from api.graph import run_research_streaming
+from api.memory import trim_history
+from api.state import ConversationTurn
+from tools.models import load_llm
+from tools.retriever import build_vector_store
 
 # Initialize logging BEFORE Chainlit's logging takes over
 # This ensures our file handler is added
@@ -35,18 +46,6 @@ except ImportError as e:
     logger.warning("data_layer_unavailable", extra={"error": str(e)})
 except Exception as e:
     logger.warning("data_layer_init_failed", extra={"error": str(e)})
-
-from api.config import (
-    CONVERSATION_MEMORY_TURNS,
-    DEFAULT_EMBED_MODEL,
-    DEFAULT_LLM_MODEL,
-    TOP_K_RESULTS,
-)
-from api.graph import run_research_streaming
-from api.memory import trim_history
-from api.state import ConversationTurn
-from tools.models import load_llm
-from tools.retriever import build_vector_store
 
 logger.info("chainlit_app_initialized")
 
@@ -98,8 +97,9 @@ def build_source_card(marker: str, title: str, url: str, snippet: str = "") -> s
 # CHAT SETTINGS
 # =============================================================================
 @cl.set_chat_profiles
-async def chat_profiles():
+async def chat_profiles(current_user=None, thread_id=None):
     """Define available chat profiles."""
+    _ = (current_user, thread_id)
     return [
         cl.ChatProfile(
             name="Research Assistant",
@@ -130,7 +130,7 @@ async def on_chat_start():
     cl.user_session.set("conversation_history", [])
 
     # Configure chat settings panel
-    settings = await cl.ChatSettings(
+    await cl.ChatSettings(
         [
             cl.input_widget.Slider(
                 id="top_k",
@@ -406,6 +406,7 @@ async def async_generator_wrapper(
 ) -> "AsyncGenerator[Dict[str, Any], None]":
     """Wrap a sync generator to work with async iteration."""
     import asyncio
+    from concurrent.futures import ThreadPoolExecutor
 
     loop = asyncio.get_event_loop()
 
@@ -415,12 +416,14 @@ async def async_generator_wrapper(
         except StopIteration:
             return None, True
 
-    while True:
-        item, done = await loop.run_in_executor(None, get_next)
-        if done:
-            break
-        if item is not None:
-            yield item
+    # Use a dedicated single worker to keep ContextVar behavior stable across next() calls.
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        while True:
+            item, done = await loop.run_in_executor(executor, get_next)
+            if done:
+                break
+            if item is not None:
+                yield item
 
 
 # =============================================================================

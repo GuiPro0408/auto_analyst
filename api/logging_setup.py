@@ -26,7 +26,11 @@ def bind_run_id(run_id: str | None) -> Iterator[None]:
     try:
         yield
     finally:
-        _RUN_ID_CONTEXT.reset(token)
+        try:
+            _RUN_ID_CONTEXT.reset(token)
+        except ValueError:
+            # Defensive fallback for rare cross-context/thread generator teardown.
+            _RUN_ID_CONTEXT.set("-")
 
 
 class _DefaultFormatter(logging.Formatter):
