@@ -21,13 +21,12 @@ jobs:
         run: |
           python -m venv venv
           source venv/bin/activate
-          pip install --upgrade pip
-          pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
-      - name: Lint (minimal)
+          make setup
+      - name: Lint
         run: |
           source venv/bin/activate
-          python -m py_compile $(find . -name "*.py" -not -path "./venv/*")
+          make lint
       - name: Test
         run: |
           source venv/bin/activate
-          pytest
+          make test

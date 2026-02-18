@@ -64,14 +64,14 @@
 # Clone and setup
 git clone https://github.com/<your-username>/auto-analyst.git && cd auto-analyst
 python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
+make setup
 
 # Configure API keys (create .env file)
 echo "GOOGLE_API_KEY=your_key_here" >> .env
 
 # Run (choose one)
-streamlit run ui/app.py              # Streamlit UI (http://localhost:8501)
-chainlit run ui/chainlit_app.py -w   # Chainlit UI with streaming (http://localhost:8000)
+make run                             # Streamlit UI (http://localhost:8501)
+make run-chainlit                    # Chainlit UI with streaming (http://localhost:8000)
 ```
 
 ---
@@ -397,22 +397,41 @@ AUTO_ANALYST_CONTEXTUAL_CHUNKS=true
 ## 🛠️ Commands
 
 ```bash
-# Setup
-source .venv/bin/activate          # Activate virtualenv
-
-# Run
-streamlit run ui/app.py            # Streamlit UI (http://localhost:8501)
-chainlit run ui/chainlit_app.py -w # Chainlit UI with streaming (http://localhost:8000)
-
-# Testing
-pytest                             # Run all tests
-pytest -v                          # Verbose output
-pytest -k "planner"                # Filter by name
-pytest --cov=api --cov=tools       # With coverage
-
-# Evaluation
-python evaluation/run_evaluation.py --dataset data/sample_eval.json --model BAAI/bge-small-en-v1.5
+# Canonical workflow surface
+make setup
+make run
+make run-chainlit
+make lint
+make test
+make check
+make build
+make format
+make eval
 ```
+
+---
+
+## ✅ Harness / Definition of Done
+
+Before merging, run the canonical harness commands locally:
+
+```bash
+make lint
+make test
+```
+
+CI uses the same command surface:
+
+| CI Step | Command |
+|:---|:---|
+| Install dependencies | `make setup` |
+| Lint/static checks | `make lint` |
+| Test | `make test` |
+
+Current guardrail limits:
+
+- `make format` is informational because formatter tooling is documented but not pinned/enforced in-repo.
+- No dedicated type-check framework is configured; syntax integrity is enforced via `py_compile`.
 
 ---
 
@@ -612,7 +631,7 @@ chainlit run ui/chainlit_app.py -w
 | 🆓 | **No paid APIs required** — uses Gemini free tier, open-source models |
 | 🤖 | **robots.txt compliance** — fetcher respects site restrictions |
 | 🔄 | **Automatic model migration** — ChromaDB detects and rebuilds incompatible embeddings |
-| 📚 | See `ressources/*.md` for technical design and evaluation methodology |
+| 📚 | See `.github/instructions/*.md` for technical implementation guidance |
 | 🔍 | Adaptive research: automatically broadens search when context is thin |
 | ✨ | Quality control: optional refinement loop to improve answers |
 
