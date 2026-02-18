@@ -50,6 +50,20 @@ except Exception as e:
 logger.info("chainlit_app_initialized")
 
 # =============================================================================
+# PIPELINE STEP LABELS
+# =============================================================================
+NODE_LABELS: Dict[str, str] = {
+    "plan": "📋 Planning",
+    "search": "🔍 Searching",
+    "fetch": "📄 Fetching Documents",
+    "retrieve": "🧠 Retrieving Context",
+    "generate": "✍️ Generating Answer",
+    "verify": "✅ Verifying Facts",
+    "adaptive": "🔄 Adaptive Research",
+    "qc": "🎯 Quality Check",
+}
+
+# =============================================================================
 # AVATAR CONFIGURATION
 # =============================================================================
 ASSISTANT_AVATAR = "/public/assistant.svg"
@@ -96,14 +110,51 @@ def build_source_card(marker: str, title: str, url: str, snippet: str = "") -> s
 # =============================================================================
 # CHAT SETTINGS
 # =============================================================================
+@cl.set_starters
+async def set_starters():
+    """Define example starter prompts shown on a new chat."""
+    return [
+        cl.Starter(
+            label="Quantum computing advances",
+            message="What are the latest advances in quantum computing as of 2025?",
+            icon="🔬",
+        ),
+        cl.Starter(
+            label="Climate tech solutions",
+            message="What are the most promising technology-based solutions to climate change?",
+            icon="🌍",
+        ),
+        cl.Starter(
+            label="Compare AI frameworks",
+            message="Compare PyTorch and JAX for deep learning research in 2025.",
+            icon="🤖",
+        ),
+        cl.Starter(
+            label="Renewable energy economics",
+            message="What is the cost-benefit analysis of solar vs wind energy at industrial scale?",
+            icon="⚡",
+        ),
+        cl.Starter(
+            label="LLM safety research",
+            message="Summarise the current state of LLM alignment and safety research.",
+            icon="🛡️",
+        ),
+    ]
+
+
 @cl.set_chat_profiles
 async def chat_profiles(current_user=None, thread_id=None):
     """Define available chat profiles."""
     _ = (current_user, thread_id)
     return [
         cl.ChatProfile(
-            name="Research Assistant",
-            markdown_description="Autonomous research with RAG-powered answers",
+            name="Quick Research",
+            markdown_description="Fast overview with **3 sources** — great for quick lookups and summaries",
+            icon="⚡",
+        ),
+        cl.ChatProfile(
+            name="Deep Research",
+            markdown_description="Comprehensive analysis with up to **8 sources** — thorough, cited, and verified",
             icon="🔬",
         ),
     ]
@@ -115,6 +166,7 @@ async def settings_update(settings):
     cl.user_session.set("top_k", settings.get("top_k", TOP_K_RESULTS))
     cl.user_session.set("llm_model", settings.get("llm_model", DEFAULT_LLM_MODEL))
     cl.user_session.set("embed_model", settings.get("embed_model", DEFAULT_EMBED_MODEL))
+    cl.user_session.set("use_cache", settings.get("use_cache", True))
 
 
 # =============================================================================
@@ -123,10 +175,15 @@ async def settings_update(settings):
 @cl.on_chat_start
 async def on_chat_start():
     """Initialize the chat session."""
+    # Adjust defaults based on selected chat profile
+    profile = cl.user_session.get("chat_profile") or "Deep Research"
+    default_top_k = 3 if profile == "Quick Research" else TOP_K_RESULTS
+
     # Set default settings
-    cl.user_session.set("top_k", TOP_K_RESULTS)
+    cl.user_session.set("top_k", default_top_k)
     cl.user_session.set("llm_model", DEFAULT_LLM_MODEL)
     cl.user_session.set("embed_model", DEFAULT_EMBED_MODEL)
+    cl.user_session.set("use_cache", True)
     cl.user_session.set("conversation_history", [])
 
     # Configure chat settings panel
@@ -135,20 +192,36 @@ async def on_chat_start():
             cl.input_widget.Slider(
                 id="top_k",
                 label="Number of sources",
-                initial=TOP_K_RESULTS,
+                initial=default_top_k,
                 min=2,
                 max=10,
                 step=1,
             ),
-            cl.input_widget.TextInput(
+            cl.input_widget.Select(
                 id="llm_model",
                 label="LLM Model",
-                initial=DEFAULT_LLM_MODEL,
+                values=[
+                    "gemini-2.0-flash",
+                    "gemini-1.5-flash",
+                    "gemini-1.5-pro",
+                    "gemini-2.0-flash-exp",
+                ],
+                initial_value=DEFAULT_LLM_MODEL,
             ),
-            cl.input_widget.TextInput(
+            cl.input_widget.Select(
                 id="embed_model",
                 label="Embedding Model",
-                initial=DEFAULT_EMBED_MODEL,
+                values=[
+                    "all-MiniLM-L6-v2",
+                    "BAAI/bge-small-en-v1.5",
+                    "BAAI/bge-large-en-v1.5",
+                ],
+                initial_value=DEFAULT_EMBED_MODEL,
+            ),
+            cl.input_widget.Switch(
+                id="use_cache",
+                label="Use result cache",
+                initial=True,
             ),
         ]
     ).send()
@@ -228,8 +301,9 @@ async def on_message(message: cl.Message):
         node: str, status: str, label: str, data: Dict[str, Any] | None = None
     ) -> None:
         """Update or create a step in the UI."""
+        display_label = NODE_LABELS.get(node, label)
         if node not in steps:
-            steps[node] = cl.Step(name=label, type="tool")
+            steps[node] = cl.Step(name=display_label, type="tool")
             await steps[node].__aenter__()
 
         if status == "complete":
@@ -381,13 +455,21 @@ async def on_message(message: cl.Message):
                     source_cards.append(f"**{marker}** {title}")
 
             if source_cards:
-                # Send sources as rich cards
-                sources_header = f"### 📚 Sources ({len(source_cards)})\n"
-                sources_header += f"_Research completed in {elapsed_time:.1f}s_\n\n"
-                sources_content = sources_header + "\n\n---\n\n".join(source_cards)
-
+                # Render each source card as an inline Text element
+                source_elements = [
+                    cl.Text(
+                        name=source_cards[i].split("\n")[0][:60].strip(),
+                        content=source_cards[i],
+                        display="inline",
+                    )
+                    for i in range(len(source_cards))
+                ]
                 await cl.Message(
-                    content=sources_content,
+                    content=(
+                        f"### 📚 Sources ({len(source_cards)})\n"
+                        f"_Research completed in {elapsed_time:.1f}s_"
+                    ),
+                    elements=source_elements,
                     author="Auto-Analyst",
                 ).send()
 

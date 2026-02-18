@@ -1,0 +1,58 @@
+/* ============================================================
+   Auto-Analyst — Chainlit UI customizations
+   ============================================================ */
+
+/* ---------- Accent colour (override Chainlit default blue) ---------- */
+:root {
+  --cl-accent: #4f8ef7;
+  --cl-accent-light: #e8f0fe;
+}
+
+/* ---------- Source cards: tighten separator gap ---------- */
+.cl-message-content hr {
+  margin: 0.5rem 0;
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+/* ---------- Citation badge pills ([1], [2], …) ---------- */
+.cl-message-content strong:first-child {
+  display: inline-block;
+  background: var(--cl-accent-light);
+  color: var(--cl-accent);
+  border-radius: 999px;
+  padding: 0.05rem 0.45rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  line-height: 1.5;
+  margin-right: 0.3rem;
+  vertical-align: middle;
+}
+
+/* ---------- Step / CoT panel: subtle left border ---------- */
+.step-container {
+  border-left: 3px solid var(--cl-accent);
+  padding-left: 0.5rem;
+}
+
+/* ---------- Settings sidebar header ---------- */
+[data-testid="settings-panel"] h2 {
+  font-size: 0.9rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--cl-accent);
+}
+
+/* ---------- Message bubble max-width (wide layout compensation) ---------- */
+.cl-message-content {
+  max-width: 900px;
+}
+
+/* ---------- Starter prompts: pill style ---------- */
+.cl-starter {
+  border: 1px solid var(--cl-accent);
+  border-radius: 8px;
+  transition: background 0.15s ease;
+}
+.cl-starter:hover {
+  background: var(--cl-accent-light);
+}
