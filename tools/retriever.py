@@ -8,7 +8,6 @@ from api.state import Chunk, Document
 from tools.chunker import TextChunker
 from vector_store.base import VectorStore
 from vector_store.chroma_store import ChromaVectorStore
-from vector_store.faiss_store import FaissVectorStore
 
 __all__ = ["build_vector_store", "chunk_documents"]
 
@@ -35,6 +34,8 @@ def build_vector_store(
         extra={"backend": backend, "model_name": model_name},
     )
     if backend == "faiss":
+        from vector_store.faiss_store import FaissVectorStore
+
         logger.debug("vector_store_using_faiss")
         return FaissVectorStore(model_name=model_name, run_id=run_id)
     logger.debug("vector_store_using_chroma")

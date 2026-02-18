@@ -624,6 +624,70 @@ chainlit run ui/chainlit_app.py -w
 
 ---
 
+## 🚀 Deploy Chainlit on Hugging Face Spaces (Free)
+
+This repo includes a production-ready Docker setup for **public Hugging Face Spaces**:
+
+- `Dockerfile` (Chainlit on port `7860`)
+- `requirements.space.txt` (lean profile for free CPU)
+- `.dockerignore` (smaller build context)
+
+### 1) Create the Space
+
+1. Create a new Space on Hugging Face.
+2. Set:
+   - **Visibility**: Public
+   - **SDK**: Docker
+   - **Hardware**: CPU Basic (free)
+3. Push this repository to the Space.
+
+### 2) Configure Secrets (Space Settings -> Variables and secrets)
+
+Required:
+
+- `GOOGLE_API_KEY`
+
+Optional:
+
+- `GOOGLE_API_KEYS` (comma-separated key rotation)
+- `TAVILY_API_KEY`
+- `GROQ_API_KEY`
+
+Runtime safety defaults are already set in `Dockerfile`:
+
+- `AUTO_ANALYST_LLM_BACKEND=gemini`
+- `AUTO_ANALYST_LOG_LEVEL=INFO`
+- `AUTO_ANALYST_LOG_REDACT_QUERIES=true`
+- `AUTO_ANALYST_LOG_FORMAT=plain`
+- `AUTO_ANALYST_FETCH_CONCURRENCY=2`
+
+### 3) Validate Deployment
+
+After build completes:
+
+1. Open the Space URL.
+2. Ask one short factual query.
+3. Confirm streamed answer appears.
+4. Confirm citations/source links render.
+5. Run 2-3 follow-up/longer queries and confirm no restart loop.
+
+### Free-Tier Constraints
+
+- Free Spaces can sleep after inactivity (cold starts are expected).
+- Filesystem is ephemeral on free tier.
+- CPU Basic has limited throughput; complex queries can be slower.
+
+### Troubleshooting
+
+| Symptom | Likely Cause | Action |
+|:---|:---|:---|
+| Build fails during install | Dependency pressure on free CPU | Keep `requirements.space.txt` lean; only re-add packages if runtime requires them |
+| App starts but responses are slow/time out | CPU pressure | Lower concurrency-related env vars, reduce query complexity |
+| Rate limit errors from Gemini | Free API quota exhausted | Configure `GOOGLE_API_KEYS` rotation |
+| Retrieval quality degrades under load | Optional components too heavy | Disable optional reranker/contextual chunking if needed |
+
+---
+
 ## 📝 Notes
 
 | | |
