@@ -1,10 +1,11 @@
 """OpenAI-compatible LLM wrapper for Auto-Analyst."""
 
-from time import perf_counter, sleep
+from time import monotonic, perf_counter, sleep
 from typing import Any, Dict, List, Optional
 
 import httpx
 
+from api.config import GROQ_AUTH_COOLDOWN_SECONDS
 from api.logging_setup import get_logger
 
 
@@ -27,6 +28,7 @@ class OpenAICompatibleLLM:
         fallback_llm: Optional[Any] = None,
         max_retries: int = 2,
         retry_delay: float = 1.0,
+        auth_cooldown_seconds: int = GROQ_AUTH_COOLDOWN_SECONDS,
     ) -> None:
         if not api_key:
             raise ValueError(f"{provider_name} API key is not set.")
@@ -41,6 +43,9 @@ class OpenAICompatibleLLM:
         self._fallback_llm = fallback_llm
         self._max_retries = max_retries
         self._retry_delay = retry_delay
+        self._auth_cooldown_seconds = max(0, auth_cooldown_seconds)
+        self._disabled_until = 0.0
+        self._disable_reason: Optional[str] = None
 
         self.logger.info(
             f"{self._provider_name}_llm_initialized",
@@ -48,6 +53,7 @@ class OpenAICompatibleLLM:
                 "model_name": model_name,
                 "generation_kwargs": self._generation_kwargs,
                 "has_fallback": fallback_llm is not None,
+                "auth_cooldown_seconds": self._auth_cooldown_seconds,
             },
         )
 
@@ -73,11 +79,41 @@ class OpenAICompatibleLLM:
 
     def _is_rate_limit_error(self, exc: Exception) -> bool:
         """Check if exception is a rate limit error."""
+        status_code = self._status_code_from_exception(exc)
+        if status_code == 429:
+            return True
         error_str = str(exc).lower()
         return any(
             term in error_str
             for term in ("429", "rate limit", "too many requests", "quota")
         )
+
+    @staticmethod
+    def _status_code_from_exception(exc: Exception) -> Optional[int]:
+        if isinstance(exc, httpx.HTTPStatusError) and exc.response is not None:
+            return exc.response.status_code
+        return None
+
+    def _is_auth_permission_error(self, exc: Exception) -> bool:
+        """Check if exception indicates auth/permission/model-access failure."""
+        status_code = self._status_code_from_exception(exc)
+        if status_code in {401, 403}:
+            return True
+        if status_code == 404:
+            error_str = str(exc).lower()
+            return any(
+                term in error_str
+                for term in ("model", "not found", "does not exist", "unknown model")
+            )
+
+        error_str = str(exc).lower()
+        return any(
+            term in error_str
+            for term in ("forbidden", "unauthorized", "permission denied")
+        )
+
+    def _cooldown_remaining_seconds(self) -> float:
+        return max(0.0, self._disabled_until - monotonic())
 
     def _call_fallback(
         self, prompt: str, cause: Optional[Exception] = None
@@ -99,6 +135,29 @@ class OpenAICompatibleLLM:
 
     def __call__(self, prompt: str) -> List[Dict[str, str]]:
         start = perf_counter()
+
+        if self._disabled_until > monotonic():
+            remaining = self._cooldown_remaining_seconds()
+            self.logger.info(
+                f"{self._provider_name}_disabled_cooldown_active",
+                extra={
+                    "remaining_seconds": round(remaining, 2),
+                    "reason": self._disable_reason or "auth_or_permission_failure",
+                    "has_fallback": self._fallback_llm is not None,
+                },
+            )
+            if self._fallback_llm is not None:
+                return self._call_fallback(
+                    prompt,
+                    RuntimeError(
+                        f"{self._provider_name} temporarily disabled ({remaining:.1f}s remaining)"
+                    ),
+                )
+            raise RuntimeError(
+                f"{self._provider_name} temporarily disabled due to auth/permission errors: "
+                f"{self._disable_reason}"
+            )
+
         headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
@@ -138,6 +197,26 @@ class OpenAICompatibleLLM:
 
             except Exception as exc:
                 last_error = exc
+                status_code = self._status_code_from_exception(exc)
+
+                if self._is_auth_permission_error(exc):
+                    self._disable_reason = str(exc)[:200]
+                    self._disabled_until = monotonic() + self._auth_cooldown_seconds
+                    self.logger.error(
+                        f"{self._provider_name}_auth_permission_failure",
+                        extra={
+                            "status_code": status_code,
+                            "cooldown_seconds": self._auth_cooldown_seconds,
+                            "has_fallback": self._fallback_llm is not None,
+                            "model_name": self._model_name,
+                            "error": str(exc)[:200],
+                        },
+                    )
+                    if self._fallback_llm is not None:
+                        return self._call_fallback(prompt, exc)
+                    raise RuntimeError(
+                        f"{self._provider_name} authentication/permission failure: {exc}"
+                    ) from exc
 
                 if self._is_rate_limit_error(exc):
                     self.logger.warning(

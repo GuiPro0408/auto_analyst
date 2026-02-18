@@ -7,6 +7,7 @@ import pytest
 
 from api.state import Chunk
 from tools.generator import (
+    QUERY_TYPE_CREATIVE,
     build_citations,
     generate_answer,
     verify_answer,
@@ -104,6 +105,32 @@ def test_generate_answer_multiple_chunks():
     answer, citations = generate_answer(llm, "question about multiple sources", chunks)
     assert isinstance(answer, str)
     assert len(citations) >= 1
+
+
+@pytest.mark.unit
+def test_generate_answer_prompt_enforces_inline_citations():
+    """Prompt should explicitly require inline citations for grounded claims."""
+    chunk = Chunk(
+        id="1",
+        text="context text",
+        metadata={"title": "Doc", "url": "http://example.com"},
+    )
+    llm = CapturingLLM("Response: ok [1]")
+    generate_answer(llm, "creative question", [chunk], query_type=QUERY_TYPE_CREATIVE)
+    assert "must include inline [n]" in llm.last_prompt
+
+
+@pytest.mark.unit
+def test_generate_answer_repair_mode_strengthens_citation_instruction():
+    """Citation repair mode should add stricter citation guidance."""
+    chunk = Chunk(
+        id="1",
+        text="context text",
+        metadata={"title": "Doc", "url": "http://example.com"},
+    )
+    llm = CapturingLLM("Answer: ok [1]")
+    generate_answer(llm, "question", [chunk], citation_mode="repair")
+    assert "Citation repair mode" in llm.last_prompt
 
 
 @pytest.mark.unit

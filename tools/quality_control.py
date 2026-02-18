@@ -1,5 +1,6 @@
 """Quality control agent for iterative answer improvement."""
 
+import re
 from typing import Dict, List, Optional
 
 from api.backend_utils import is_local_backend
@@ -18,6 +19,8 @@ FALLBACK_PHRASES = [
     "No context retrieved",
     "No sufficient context",
 ]
+
+CITATION_PATTERN = re.compile(r"\[\d+\]")
 
 
 def assess_answer(
@@ -64,8 +67,8 @@ def assess_answer(
         issues.append("No supporting context retrieved.")
         logger.warning("assess_answer_no_context")
 
-    # Check 3: Require at least one citation marker
-    if "[" not in answer:
+    # Check 3: Require at least one numeric citation marker
+    if not CITATION_PATTERN.search(answer):
         issues.append("Missing citations.")
         logger.warning("assess_answer_no_citations")
 
@@ -113,7 +116,12 @@ def assess_answer(
 
 
 def improve_answer(
-    llm, question: str, answer: str, contexts: List[Chunk], run_id: Optional[str] = None
+    llm,
+    question: str,
+    answer: str,
+    contexts: List[Chunk],
+    run_id: Optional[str] = None,
+    issues: Optional[List[str]] = None,
 ) -> str:
     """Use the existing generation/verification flow to improve the answer."""
     logger = get_logger(__name__, run_id=run_id)
@@ -129,10 +137,21 @@ def improve_answer(
             "question": question,
             "current_answer_length": len(answer),
             "contexts": len(contexts),
+            "issues": issues or [],
         },
     )
+    citation_mode = (
+        "repair" if issues and any("Missing citations." in i for i in issues) else "default"
+    )
+    logger.info("improve_answer_mode", extra={"citation_mode": citation_mode})
+
     # Reuse generator + verifier prompts for refinement
-    draft, citations = generate_answer(llm, question, contexts)
+    draft, citations = generate_answer(
+        llm,
+        question,
+        contexts,
+        citation_mode=citation_mode,
+    )
     logger.debug(
         "improve_answer_draft_generated",
         extra={"draft_length": len(draft), "citations": len(citations)},

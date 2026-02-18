@@ -19,7 +19,7 @@ QUERY_TYPE_CREATIVE = "creative"
 # =============================================================================
 
 # Compact prompt for local/CPU LLM to reduce token overhead
-PROMPT_LOCAL_COMPACT = """Answer the question using only the context below. Be concise but complete. Cite sources with [n].
+PROMPT_LOCAL_COMPACT = """Answer the question using only the context below. Be concise but complete. Every grounded factual claim must cite sources with inline [n].
 
 Question: {query}
 
@@ -36,8 +36,8 @@ Guidelines:
 - Organize your response with clear sections using **bold headers**
 - Provide deep, detailed explanations rather than surface-level summaries
 - Use bullet points or numbered lists to present complex information clearly
-{list_instruction}\
-- Support every claim with inline citations [n] using the context entries
+{list_instruction}{citation_instruction}\
+- Support every key factual claim with inline citations [n] using the context entries
 - Be specific: include dates, names, figures, and technical details from the sources
 - If sources present conflicting information, acknowledge both perspectives with their respective citations
 - If the context is insufficient to fully answer the question, clearly state what aspects cannot be addressed and why
@@ -59,8 +59,8 @@ Guidelines:
 - For each recommendation, explain the reasoning and why it's a good fit
 - Use **bold headers** for each recommendation section
 - Utilize bullet points for features, pros/cons, or additional details
-{list_instruction}\
-- Use [n] citations whenever a detail or specific item is found in the search results
+{list_instruction}{citation_instruction}\
+- For each recommendation grounded in context, include at least one inline citation [n]
 - Add your own expert perspective to add value beyond the raw search data
 - If sources present conflicting opinions or reviews, acknowledge both perspectives
 - If the context lacks sufficient options or details, clearly note what additional information would help
@@ -80,8 +80,8 @@ your own insights and explanations.
 Guidelines:
 - Be informative and engaging
 - Structure your response clearly
-{list_instruction}\
-- Reference sources with [n] when using specific information from them
+{list_instruction}{citation_instruction}\
+- Any factual statement derived from the reference context must include inline [n]
 - You may expand beyond the provided context when helpful
 - If sources offer different viewpoints, explore the nuances of each
 - If the context is limited, acknowledge it while still providing your best response
@@ -192,12 +192,19 @@ def _build_generate_prompt(
     context_block: str,
     conversation_context: Optional[str],
     query_type: str,
+    citation_mode: str = "default",
 ) -> Tuple[str, str]:
+    citation_mode = citation_mode if citation_mode in {"default", "repair"} else "default"
     if is_local_backend():
         prompt = PROMPT_LOCAL_COMPACT.format(
             query=query,
             context_block=context_block,
         )
+        if citation_mode == "repair":
+            prompt += (
+                "\n\nCitation repair mode: include an inline [n] citation for each "
+                "key factual statement derived from context."
+            )
         return prompt, "Answer:"
 
     context_instruction = ""
@@ -217,12 +224,20 @@ def _build_generate_prompt(
             "For each item include the name/title and any available date/status, "
             "with an inline citation [n] for that item.\n"
         )
+    citation_instruction = ""
+    if citation_mode == "repair":
+        citation_instruction = (
+            "- Citation repair mode: include inline [n] citations for each key "
+            "factual statement derived from context. Do not leave grounded "
+            "claims uncited.\n"
+        )
 
     prompt_template = PROMPT_TEMPLATES.get(query_type, PROMPT_FACTUAL)
     response_delimiter = RESPONSE_DELIMITERS.get(query_type, "Answer:")
 
     prompt = prompt_template.format(
         list_instruction=list_instruction,
+        citation_instruction=citation_instruction,
         context_instruction=context_instruction,
         query=query,
         context_block=context_block,
@@ -321,6 +336,7 @@ def generate_answer(
     retrieved: List[Chunk],
     conversation_context: Optional[str] = None,
     query_type: str = QUERY_TYPE_FACTUAL,
+    citation_mode: str = "default",
 ) -> Tuple[str, List[Dict[str, str]]]:
     logger = get_logger(__name__)
     logger.info(
@@ -330,6 +346,7 @@ def generate_answer(
             "retrieved_chunks": len(retrieved),
             "conversation_context": bool(conversation_context),
             "query_type": query_type,
+            "citation_mode": citation_mode,
         },
     )
     if not retrieved:
@@ -363,6 +380,7 @@ def generate_answer(
         context_block=context_block,
         conversation_context=conversation_context,
         query_type=query_type,
+        citation_mode=citation_mode,
     )
     if is_local_backend():
         logger.debug(

@@ -267,6 +267,7 @@ async def on_message(message: cl.Message):
             embed_model=embed_model,
             top_k=top_k,
             conversation_history=history_turns,
+            run_id=run_id,
         )
     ):
         event_type = event.get("type")

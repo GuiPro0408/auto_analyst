@@ -152,7 +152,11 @@ class ConfigurableFakeVectorStore(VectorStore):
 
 
 def fake_search(
-    tasks, max_results: int = 5, run_id: Optional[str] = None
+    tasks,
+    max_results: int = 5,
+    run_id: Optional[str] = None,
+    time_sensitive: Optional[bool] = None,
+    **kwargs,
 ) -> Tuple[List[SearchResult], List[str]]:
     """Fake search function returning a single example result."""
     return (
@@ -181,6 +185,19 @@ def fake_fetch(
         ),
         None,
     )
+
+
+def fake_fetch_parallel(
+    results: List[SearchResult],
+    max_workers: int = 4,
+    run_id: Optional[str] = None,
+) -> Tuple[List[Document], List[str]]:
+    documents: List[Document] = []
+    for result in results:
+        document, warning = fake_fetch(result, run_id=run_id)
+        if document:
+            documents.append(document)
+    return documents, []
 
 
 def fake_smart_search(
@@ -272,6 +289,7 @@ def mock_search_and_fetch(monkeypatch):
     """Fixture that patches search and fetch functions with fakes."""
     monkeypatch.setattr("api.graph.run_search_tasks", fake_search)
     monkeypatch.setattr("api.graph.fetch_url", fake_fetch)
+    monkeypatch.setattr("api.graph.fetch_documents_parallel", fake_fetch_parallel)
     monkeypatch.setattr("api.graph.smart_search", fake_smart_search)
 
 

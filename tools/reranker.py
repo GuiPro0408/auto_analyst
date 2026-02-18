@@ -43,8 +43,11 @@ def rerank_chunks(
 
     logger = get_logger(__name__, run_id=run_id)
 
-    if not ENABLE_RERANKER or not chunks:
+    if not chunks:
         # Return None for scores to signal "no reranking performed"
+        return list(chunks), None
+    if not ENABLE_RERANKER and model is None:
+        # Allow explicit test-time/injected model usage even when global reranker is disabled.
         return list(chunks), None
 
     try:

@@ -3,18 +3,39 @@
 import json
 import logging
 import sys
+from contextlib import contextmanager
+from contextvars import ContextVar
 from logging import Logger, LoggerAdapter
-from typing import Any, Dict
+from typing import Any, Dict, Iterator
 
 from api import config
+
+_RUN_ID_CONTEXT: ContextVar[str] = ContextVar("auto_analyst_run_id", default="-")
+
+
+def get_current_run_id() -> str:
+    """Return the current run ID from logging context."""
+    run_id = _RUN_ID_CONTEXT.get()
+    return run_id if run_id else "-"
+
+
+@contextmanager
+def bind_run_id(run_id: str | None) -> Iterator[None]:
+    """Temporarily bind a run ID for logs emitted in this context."""
+    token = _RUN_ID_CONTEXT.set(run_id or "-")
+    try:
+        yield
+    finally:
+        _RUN_ID_CONTEXT.reset(token)
 
 
 class _DefaultFormatter(logging.Formatter):
     def format(
         self, record: logging.LogRecord
     ) -> str:  # pragma: no cover - thin wrapper
-        if not hasattr(record, "run_id"):
-            record.run_id = "-"
+        record_run_id = getattr(record, "run_id", "-")
+        if not record_run_id or record_run_id == "-":
+            record.run_id = get_current_run_id()
         return super().format(record)
 
 
@@ -27,7 +48,11 @@ class _JsonFormatter(logging.Formatter):
             "level": record.levelname,
             "name": record.name,
             "message": record.getMessage(),
-            "run_id": getattr(record, "run_id", "-"),
+            "run_id": (
+                get_current_run_id()
+                if getattr(record, "run_id", "-") in ("", "-")
+                else getattr(record, "run_id", "-")
+            ),
         }
         if record.exc_info:
             payload["exc_info"] = self.formatException(record.exc_info)

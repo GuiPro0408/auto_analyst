@@ -1,4 +1,4 @@
-.PHONY: help setup run run-chainlit test lint format build check eval
+.PHONY: help setup run run-chainlit test lint format build check eval validate-groq
 
 PYTHON ?= python
 
@@ -13,6 +13,7 @@ help:
 	@echo "  make build        Run build-equivalent integrity check"
 	@echo "  make format       Formatter status (informational)"
 	@echo "  make eval         Run evaluation script"
+	@echo "  make validate-groq Validate Groq key/model accessibility"
 
 setup:
 	$(PYTHON) -m pip install --upgrade pip
@@ -40,3 +41,6 @@ check: lint test
 
 eval:
 	$(PYTHON) evaluation/run_evaluation.py --dataset data/sample_eval.json --model all-MiniLM-L6-v2
+
+validate-groq:
+	$(PYTHON) -m tools.provider_health --provider groq --timeout 8

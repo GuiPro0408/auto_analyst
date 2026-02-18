@@ -446,6 +446,65 @@ def test_run_research_streaming_token_events_have_phase(monkeypatch):
         assert event["phase"] in ("generate", "verify")
 
 
+def test_run_research_streaming_uses_supplied_run_id(monkeypatch):
+    """Streaming API should preserve caller-provided run ID."""
+    from api.graph import run_research_streaming
+
+    class MockCacheManager:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def get_cached_result(self, *args, **kwargs):
+            return None
+
+        def save_result(self, *args, **kwargs):
+            pass
+
+    monkeypatch.setattr("api.graph.CacheManager", MockCacheManager)
+
+    def fake_smart_search(query, max_results=5, run_id=None):
+        return (
+            [
+                SearchResult(
+                    url="http://example.com",
+                    title="Test",
+                    snippet="test",
+                    source="tavily",
+                )
+            ],
+            [],
+        )
+
+    def fake_fetch_parallel(results, max_workers=4, run_id=None):
+        return [
+            Document(url=r.url, title=r.title, content="Content.", media_type="html")
+            for r in results
+        ], []
+
+    monkeypatch.setattr("api.graph.smart_search", fake_smart_search)
+    monkeypatch.setattr(
+        "api.graph.run_search_tasks", lambda tasks, **kw: fake_smart_search("", **kw)
+    )
+    monkeypatch.setattr("api.graph.fetch_documents_parallel", fake_fetch_parallel)
+
+    llm = FakeStreamingLLM("Answer: Test [1].", token_size=5)
+    store = FakeVectorStore()
+    expected_run_id = "test-run-id-123"
+
+    events = list(
+        run_research_streaming(
+            "Query",
+            llm=llm,
+            vector_store=store,
+            top_k=3,
+            run_id=expected_run_id,
+        )
+    )
+    complete_event = next(e for e in events if e.get("type") == "complete")
+    result = complete_event.get("result")
+    assert result.run_id == expected_run_id
+
+
 # =============================================================================
 # Integration Tests
 # =============================================================================
