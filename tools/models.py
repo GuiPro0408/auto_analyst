@@ -28,6 +28,7 @@ from api.config import (
 from api.key_rotator import APIKeyRotator, get_default_rotator
 from api.logging_setup import get_logger
 from tools.openai_compatible_llm import OpenAICompatibleLLM
+from tools.provider_health import validate_groq
 
 # Re-export for backward compatibility with tests
 GEMINI_API_KEY = GEMINI_API_KEYS[0] if GEMINI_API_KEYS else ""
@@ -683,16 +684,52 @@ def load_llm(model_name: str = DEFAULT_LLM_MODEL):
     groq_llm = None
     if GROQ_API_KEY:
         try:
+            groq_model = GROQ_MODEL if model_name == DEFAULT_LLM_MODEL else model_name
             groq_llm = OpenAICompatibleLLM(
-                model_name=(
-                    GROQ_MODEL if model_name == DEFAULT_LLM_MODEL else model_name
-                ),
+                model_name=groq_model,
                 api_key=GROQ_API_KEY,
                 generation_kwargs=GENERATION_KWARGS,
                 base_url="https://api.groq.com/openai/v1",
                 provider_name="groq",
             )
             logger.info("load_llm_groq_ready")
+            try:
+                preflight = validate_groq(
+                    api_key=GROQ_API_KEY,
+                    model_name=groq_model,
+                    timeout_s=5,
+                )
+                key_suffix = GROQ_API_KEY[-6:] if GROQ_API_KEY else ""
+                if preflight.get("ok"):
+                    logger.info(
+                        "groq_preflight_ok",
+                        extra={
+                            "model_name": groq_model,
+                            "key_suffix": key_suffix,
+                            "model_visible": preflight.get("model_visible", False),
+                            "chat_callable": preflight.get("chat_callable", False),
+                        },
+                    )
+                else:
+                    logger.warning(
+                        "groq_preflight_failed",
+                        extra={
+                            "model_name": groq_model,
+                            "key_suffix": key_suffix,
+                            "failure_type": preflight.get("failure_type", "unknown"),
+                            "http_status": preflight.get("http_status"),
+                            "message": preflight.get("message", "")[:200],
+                            "action": (
+                                "Check GROQ_API_KEY, model access permissions, "
+                                "and AUTO_ANALYST_GROQ_MODEL."
+                            ),
+                        },
+                    )
+            except Exception as preflight_exc:
+                logger.warning(
+                    "groq_preflight_check_error",
+                    extra={"error": str(preflight_exc)[:200]},
+                )
         except Exception as e:
             logger.warning("load_llm_groq_init_failed", extra={"error": str(e)})
 
