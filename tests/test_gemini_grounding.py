@@ -4,13 +4,10 @@ import os
 from unittest.mock import MagicMock, patch
 
 import pytest
-
-from api.state import SearchResult, Chunk
 from tools.gemini_grounding import (
     GroundingResult,
     GroundingSource,
     query_with_grounding,
-    grounding_sources_to_chunks,
     _extract_grounding_sources,
 )
 from tools.search import GeminiGroundingBackend
@@ -188,38 +185,6 @@ class TestExtractGroundingSources:
         assert sources[0].url == "https://example.com/page"
         assert sources[0].title == "Example Page"
         assert queries == ["test query"]
-
-
-class TestGroundingSourcesToChunks:
-    """Tests for grounding_sources_to_chunks helper."""
-
-    def test_converts_sources_to_chunks(self):
-        """Should convert GroundingSource list to chunk dicts."""
-        sources = [
-            GroundingSource(
-                url="https://example.com/1",
-                title="Source 1",
-                snippet="Snippet 1",
-            ),
-            GroundingSource(
-                url="https://example.com/2",
-                title="Source 2",
-                snippet="Snippet 2",
-            ),
-        ]
-
-        chunks = grounding_sources_to_chunks(sources)
-
-        assert len(chunks) == 2
-        assert chunks[0]["metadata"]["url"] == "https://example.com/1"
-        assert chunks[0]["metadata"]["title"] == "Source 1"
-        assert chunks[0]["metadata"]["source"] == "gemini_grounding"
-        assert chunks[1]["metadata"]["url"] == "https://example.com/2"
-
-    def test_empty_sources_returns_empty(self):
-        """Should return empty list for empty sources."""
-        chunks = grounding_sources_to_chunks([])
-        assert chunks == []
 
 
 class TestGeminiGroundingBackend:

@@ -153,6 +153,7 @@ def build_workflow(
                 results, warnings = run_search_tasks(
                     plan,
                     max_results=5,
+                    time_sensitive=state.get("time_sensitive"),
                     run_id=state.get("run_id"),
                 )
             log.info(
@@ -457,6 +458,7 @@ def build_workflow(
         results, search_warns = run_search_tasks(
             plan,
             max_results=5,
+            time_sensitive=state.get("time_sensitive"),
             run_id=state.get("run_id"),
         )
         # Use immutable concatenation - collect all new warnings

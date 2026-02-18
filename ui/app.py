@@ -5,11 +5,12 @@ Note: This module should be run from the project root directory using:
 """
 
 import html
+import os
 import sys
 import time
 from pathlib import Path
 
-# Add project root to path for imports
+# Add project root to path for imports (script execution shim)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from uuid import uuid4
@@ -28,6 +29,13 @@ from api.memory import trim_history
 from api.state import ConversationTurn
 from tools.models import load_llm
 from tools.retriever import build_vector_store
+
+UI_DEBUG_ENABLED = os.getenv("AUTO_ANALYST_UI_DEBUG", "true").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 # =============================================================================
 # PAGE CONFIG & CUSTOM STYLING
@@ -285,27 +293,6 @@ with col2:
         st.session_state.last_result = None
         st.rerun()
 
-
-def render_sources(citations):
-    """Render citations as styled cards."""
-    for cite in citations:
-        url = cite.get("url", "")
-        title = cite.get("title", "Source")
-        marker = cite.get("marker", "")
-        if url:
-            st.markdown(
-                f"""<div class="source-card">
-                {marker} <a href="{url}" target="_blank">{title}</a>
-            </div>""",
-                unsafe_allow_html=True,
-            )
-        else:
-            st.markdown(
-                f"""<div class="source-card">{marker} {title}</div>""",
-                unsafe_allow_html=True,
-            )
-
-
 progress_placeholder = st.empty()
 
 
@@ -483,36 +470,41 @@ if st.session_state.last_result:
     # ==========================================================================
     # DEBUG SECTION (Contains chunks, errors, search results)
     # ==========================================================================
-    with st.expander("🔧 Debug Information", expanded=False):
-        # Run info
-        st.markdown(f"**Run ID:** `{result.run_id}`")
+    if UI_DEBUG_ENABLED:
+        with st.expander("🔧 Debug Information", expanded=False):
+            # Run info
+            st.markdown(f"**Run ID:** `{result.run_id}`")
 
-        # Errors & Warnings first (if any)
-        if result.errors:
-            st.error("**Errors:**\n" + "\n".join(f"• {e}" for e in result.errors))
-        if getattr(result, "warnings", []):
-            st.warning("**Warnings:**\n" + "\n".join(f"• {w}" for w in result.warnings))
-        if getattr(result, "qc_notes", []):
-            st.info("**QC Notes:**\n" + "\n".join(f"• {n}" for n in result.qc_notes))
+            # Errors & Warnings first (if any)
+            if result.errors:
+                st.error("**Errors:**\n" + "\n".join(f"• {e}" for e in result.errors))
+            if getattr(result, "warnings", []):
+                st.warning(
+                    "**Warnings:**\n" + "\n".join(f"• {w}" for w in result.warnings)
+                )
+            if getattr(result, "qc_notes", []):
+                st.info(
+                    "**QC Notes:**\n" + "\n".join(f"• {n}" for n in result.qc_notes)
+                )
 
-        # Search results
-        st.markdown("**Search Results:**")
-        for r in result.search_results[:10]:
-            st.markdown(f"- [{r.title}]({r.url})")
+            # Search results
+            st.markdown("**Search Results:**")
+            for r in result.search_results[:10]:
+                st.markdown(f"- [{r.title}]({r.url})")
 
-        # Retrieved chunks (merged here)
-        st.markdown(f"**Retrieved Chunks ({len(result.retrieved)}):**")
-        for idx, chunk in enumerate(result.retrieved, start=1):
-            meta = chunk.metadata or {}
-            title = html.escape(meta.get("title", "Source"))
-            url = meta.get("url", "")
-            # Escape chunk text to prevent HTML injection
-            chunk_preview = html.escape(chunk.text[:400])
-            if len(chunk.text) > 400:
-                chunk_preview += "..."
-            with st.container():
-                st.markdown(
-                    f"""
+            # Retrieved chunks (merged here)
+            st.markdown(f"**Retrieved Chunks ({len(result.retrieved)}):**")
+            for idx, chunk in enumerate(result.retrieved, start=1):
+                meta = chunk.metadata or {}
+                title = html.escape(meta.get("title", "Source"))
+                url = meta.get("url", "")
+                # Escape chunk text to prevent HTML injection
+                chunk_preview = html.escape(chunk.text[:400])
+                if len(chunk.text) > 400:
+                    chunk_preview += "..."
+                with st.container():
+                    st.markdown(
+                        f"""
                 <div style="background: rgba(255,255,255,0.03); padding: 0.75rem; 
                             border-radius: 8px; margin-bottom: 0.5rem; font-size: 0.85rem;
                             border: 1px solid rgba(255,255,255,0.1);">
@@ -521,8 +513,8 @@ if st.session_state.last_result:
                     <br><span style="color: #888;">{chunk_preview}</span>
                 </div>
                 """,
-                    unsafe_allow_html=True,
-                )
+                        unsafe_allow_html=True,
+                    )
 
 st.markdown("---")
 

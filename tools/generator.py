@@ -108,6 +108,157 @@ RESPONSE_DELIMITERS = {
 }
 
 
+def _select_relevant_chunks(
+    query: str,
+    retrieved: List[Chunk],
+    *,
+    logger=None,
+    log_fallback: bool = True,
+) -> List[Chunk]:
+    query_keywords = extract_keywords(query, stopwords=STOPWORDS)
+    if logger:
+        logger.debug(
+            "generate_query_keywords",
+            extra={"query_keywords": list(query_keywords)[:10]},
+        )
+
+    relevant_chunks: List[Chunk] = []
+    for chunk in retrieved:
+        chunk_text = chunk.text or ""
+        chunk_keywords = extract_keywords(chunk_text, stopwords=STOPWORDS)
+        overlap = query_keywords & chunk_keywords
+        if overlap or not query_keywords:
+            relevant_chunks.append(chunk)
+
+    if logger:
+        logger.info(
+            "generate_chunks_filtered",
+            extra={
+                "input_chunks": len(retrieved),
+                "relevant_chunks": len(relevant_chunks),
+            },
+        )
+
+    if not relevant_chunks and retrieved:
+        if logger and log_fallback:
+            logger.warning(
+                "generate_fallback_to_all_chunks",
+                extra={
+                    "reason": "filtering_too_aggressive",
+                    "original_count": len(retrieved),
+                },
+            )
+        relevant_chunks = retrieved
+
+    return relevant_chunks
+
+
+def _trim_chunks_for_backend(
+    chunks: List[Chunk],
+    *,
+    logger=None,
+) -> List[Chunk]:
+    if not is_limited_backend():
+        return chunks
+
+    max_chunks = 6 if not is_local_backend() else 4
+    max_chunk_chars = 800 if not is_local_backend() else 1200
+    if logger and len(chunks) > max_chunks:
+        logger.info(
+            "generate_limited_trim_chunks",
+            extra={
+                "original_chunks": len(chunks),
+                "kept_chunks": max_chunks,
+                "backend": LLM_BACKEND,
+            },
+        )
+    trimmed_chunks: List[Chunk] = []
+    for chunk in chunks[:max_chunks]:
+        text = chunk.text or ""
+        if len(text) > max_chunk_chars:
+            text = text[:max_chunk_chars]
+        trimmed_chunks.append(
+            Chunk(
+                id=chunk.id,
+                text=text,
+                metadata=chunk.metadata,
+            )
+        )
+    return trimmed_chunks
+
+
+def _build_generate_prompt(
+    query: str,
+    context_block: str,
+    conversation_context: Optional[str],
+    query_type: str,
+) -> Tuple[str, str]:
+    if is_local_backend():
+        prompt = PROMPT_LOCAL_COMPACT.format(
+            query=query,
+            context_block=context_block,
+        )
+        return prompt, "Answer:"
+
+    context_instruction = ""
+    if conversation_context:
+        trimmed_context = " ".join(conversation_context.split())
+        if len(trimmed_context) > 800:
+            trimmed_context = trimmed_context[-800:]
+        context_instruction = (
+            "Prior conversation summary (use for continuity when relevant):\n"
+            f"{trimmed_context}\n\n"
+        )
+
+    list_instruction = ""
+    if requires_structured_list(query):
+        list_instruction = (
+            "- Present the answer as a bullet or numbered list of items. "
+            "For each item include the name/title and any available date/status, "
+            "with an inline citation [n] for that item.\n"
+        )
+
+    prompt_template = PROMPT_TEMPLATES.get(query_type, PROMPT_FACTUAL)
+    response_delimiter = RESPONSE_DELIMITERS.get(query_type, "Answer:")
+
+    prompt = prompt_template.format(
+        list_instruction=list_instruction,
+        context_instruction=context_instruction,
+        query=query,
+        context_block=context_block,
+    )
+    return prompt, response_delimiter
+
+
+def _build_verify_prompt(
+    query: str,
+    draft: str,
+    context_block: str,
+    conversation_context: Optional[str],
+    *,
+    context_header: str,
+) -> str:
+    context_instruction = ""
+    if conversation_context:
+        trimmed_context = " ".join(conversation_context.split())
+        if len(trimmed_context) > 800:
+            trimmed_context = trimmed_context[-800:]
+        context_instruction = f"{context_header}\n{trimmed_context}\n\n"
+
+    return (
+        "You are a fact-checking verifier. Review the draft answer against the provided context. "
+        "Remove or correct any statements that are not directly supported by the context. "
+        "Preserve the structure, formatting (headers, bullet points, lists), and level of detail from the draft. "
+        "Keep inline citations [n] only when the claim is supported by the corresponding context entry. "
+        "Do not shorten or oversimplify the answer - maintain comprehensive coverage.\n\n"
+        f"{context_instruction}"
+        f"User question: {query}\n\n"
+        f"Context:\n{context_block}\n\n"
+        f"Draft answer:\n{draft}\n\n"
+        "Verified answer:"
+    )
+
+
 def _format_context(chunks: List[Chunk]) -> str:
     lines = []
     for idx, chunk in enumerate(chunks):
@@ -185,42 +336,7 @@ def generate_answer(
         logger.warning("generate_answer_no_context", extra={"query": query})
         return "No context retrieved to answer the question.", []
 
-    # Check if retrieved chunks are relevant to the query
-    query_keywords = extract_keywords(query, stopwords=STOPWORDS)
-    logger.debug(
-        "generate_query_keywords",
-        extra={"query_keywords": list(query_keywords)[:10]},
-    )
-
-    relevant_chunks: List[Chunk] = []
-    for chunk in retrieved:
-        chunk_text = chunk.text or ""
-        chunk_keywords = extract_keywords(chunk_text, stopwords=STOPWORDS)
-
-        # Check for keyword overlap
-        overlap = query_keywords & chunk_keywords
-
-        # If there's overlap OR query has no extractable keywords, include the chunk
-        # This handles cases where the query is very short or generic
-        if overlap or not query_keywords:
-            relevant_chunks.append(chunk)
-
-    logger.info(
-        "generate_chunks_filtered",
-        extra={"input_chunks": len(retrieved), "relevant_chunks": len(relevant_chunks)},
-    )
-
-    # If no relevant chunks found after filtering, use all chunks but warn in the answer
-    if not relevant_chunks and retrieved:
-        # Fall back to using all retrieved chunks if filtering is too aggressive
-        logger.warning(
-            "generate_fallback_to_all_chunks",
-            extra={
-                "reason": "filtering_too_aggressive",
-                "original_count": len(retrieved),
-            },
-        )
-        relevant_chunks = retrieved
+    relevant_chunks = _select_relevant_chunks(query, retrieved, logger=logger)
 
     if not relevant_chunks:
         logger.warning("generate_no_relevant_chunks", extra={"query": query})
@@ -231,32 +347,7 @@ def generate_answer(
             [],
         )
 
-    # Trim context for backends with token limits
-    if is_limited_backend():
-        max_chunks = 6 if not is_local_backend() else 4
-        max_chunk_chars = 800 if not is_local_backend() else 1200
-        if len(relevant_chunks) > max_chunks:
-            logger.info(
-                "generate_limited_trim_chunks",
-                extra={
-                    "original_chunks": len(relevant_chunks),
-                    "kept_chunks": max_chunks,
-                    "backend": LLM_BACKEND,
-                },
-            )
-        trimmed_chunks: List[Chunk] = []
-        for chunk in relevant_chunks[:max_chunks]:
-            text = chunk.text or ""
-            if len(text) > max_chunk_chars:
-                text = text[:max_chunk_chars]
-            trimmed_chunks.append(
-                Chunk(
-                    id=chunk.id,
-                    text=text,
-                    metadata=chunk.metadata,
-                )
-            )
-        relevant_chunks = trimmed_chunks
+    relevant_chunks = _trim_chunks_for_backend(relevant_chunks, logger=logger)
 
     context_block = _format_context(relevant_chunks)
     logger.debug(
@@ -267,45 +358,16 @@ def generate_answer(
         },
     )
 
-    # Use compact prompt for local backend to reduce token overhead
+    prompt, response_delimiter = _build_generate_prompt(
+        query=query,
+        context_block=context_block,
+        conversation_context=conversation_context,
+        query_type=query_type,
+    )
     if is_local_backend():
-        prompt = PROMPT_LOCAL_COMPACT.format(
-            query=query,
-            context_block=context_block,
-        )
-        response_delimiter = "Answer:"
         logger.debug(
             "generate_using_compact_prompt",
             extra={"prompt_length": len(prompt)},
-        )
-    else:
-        context_instruction = ""
-        if conversation_context:
-            trimmed_context = " ".join(conversation_context.split())
-            if len(trimmed_context) > 800:
-                trimmed_context = trimmed_context[-800:]
-            context_instruction = (
-                "Prior conversation summary (use for continuity when relevant):\n"
-                f"{trimmed_context}\n\n"
-            )
-
-        list_instruction = ""
-        if requires_structured_list(query):
-            list_instruction = (
-                "- Present the answer as a bullet or numbered list of items. "
-                "For each item include the name/title and any available date/status, "
-                "with an inline citation [n] for that item.\n"
-            )
-
-        # Select prompt template based on query type
-        prompt_template = PROMPT_TEMPLATES.get(query_type, PROMPT_FACTUAL)
-        response_delimiter = RESPONSE_DELIMITERS.get(query_type, "Answer:")
-
-        prompt = prompt_template.format(
-            list_instruction=list_instruction,
-            context_instruction=context_instruction,
-            query=query,
-            context_block=context_block,
         )
 
     logger.debug(
@@ -359,8 +421,6 @@ def generate_answer_stream(
         - is_complete: True on final yield
         - citations: populated only on final yield
     """
-    from typing import Generator
-
     logger = get_logger(__name__)
     logger.info(
         "generate_answer_stream_start",
@@ -387,17 +447,12 @@ def generate_answer_stream(
         return
 
     # Prepare context (same as generate_answer)
-    query_keywords = extract_keywords(query, stopwords=STOPWORDS)
-    relevant_chunks: List[Chunk] = []
-    for chunk in retrieved:
-        chunk_text = chunk.text or ""
-        chunk_keywords = extract_keywords(chunk_text, stopwords=STOPWORDS)
-        overlap = query_keywords & chunk_keywords
-        if overlap or not query_keywords:
-            relevant_chunks.append(chunk)
-
-    if not relevant_chunks and retrieved:
-        relevant_chunks = retrieved
+    relevant_chunks = _select_relevant_chunks(
+        query,
+        retrieved,
+        logger=None,
+        log_fallback=False,
+    )
 
     if not relevant_chunks:
         yield (
@@ -408,53 +463,17 @@ def generate_answer_stream(
         return
 
     # Trim context for limited backends
-    if is_limited_backend():
-        max_chunks = 6 if not is_local_backend() else 4
-        max_chunk_chars = 800 if not is_local_backend() else 1200
-        trimmed_chunks: List[Chunk] = []
-        for chunk in relevant_chunks[:max_chunks]:
-            text = chunk.text or ""
-            if len(text) > max_chunk_chars:
-                text = text[:max_chunk_chars]
-            trimmed_chunks.append(
-                Chunk(id=chunk.id, text=text, metadata=chunk.metadata)
-            )
-        relevant_chunks = trimmed_chunks
+    relevant_chunks = _trim_chunks_for_backend(relevant_chunks, logger=None)
 
     context_block = _format_context(relevant_chunks)
 
     # Build prompt (same logic as generate_answer)
-    if is_local_backend():
-        prompt = PROMPT_LOCAL_COMPACT.format(query=query, context_block=context_block)
-        response_delimiter = "Answer:"
-    else:
-        context_instruction = ""
-        if conversation_context:
-            trimmed_context = " ".join(conversation_context.split())
-            if len(trimmed_context) > 800:
-                trimmed_context = trimmed_context[-800:]
-            context_instruction = (
-                "Prior conversation summary (use for continuity when relevant):\n"
-                f"{trimmed_context}\n\n"
-            )
-
-        list_instruction = ""
-        if requires_structured_list(query):
-            list_instruction = (
-                "- Present the answer as a bullet or numbered list of items. "
-                "For each item include the name/title and any available date/status, "
-                "with an inline citation [n] for that item.\n"
-            )
-
-        prompt_template = PROMPT_TEMPLATES.get(query_type, PROMPT_FACTUAL)
-        response_delimiter = RESPONSE_DELIMITERS.get(query_type, "Answer:")
-
-        prompt = prompt_template.format(
-            list_instruction=list_instruction,
-            context_instruction=context_instruction,
-            query=query,
-            context_block=context_block,
-        )
+    prompt, response_delimiter = _build_generate_prompt(
+        query=query,
+        context_block=context_block,
+        conversation_context=conversation_context,
+        query_type=query_type,
+    )
 
     # Stream tokens
     accumulated = ""
@@ -518,27 +537,12 @@ def verify_answer_stream(
 
     context_block = _format_context(retrieved)
 
-    context_instruction = ""
-    if conversation_context:
-        trimmed_context = " ".join(conversation_context.split())
-        if len(trimmed_context) > 800:
-            trimmed_context = trimmed_context[-800:]
-        context_instruction = (
-            "Prior conversation summary (use for continuity when relevant):\n"
-            f"{trimmed_context}\n\n"
-        )
-
-    prompt = (
-        "You are a fact-checking verifier. Review the draft answer against the provided context. "
-        "Remove or correct any statements that are not directly supported by the context. "
-        "Preserve the structure, formatting (headers, bullet points, lists), and level of detail from the draft. "
-        "Keep inline citations [n] only when the claim is supported by the corresponding context entry. "
-        "Do not shorten or oversimplify the answer - maintain comprehensive coverage.\n\n"
-        f"{context_instruction}"
-        f"User question: {query}\n\n"
-        f"Context:\n{context_block}\n\n"
-        f"Draft answer:\n{draft}\n\n"
-        "Verified answer:"
+    prompt = _build_verify_prompt(
+        query=query,
+        draft=draft,
+        context_block=context_block,
+        conversation_context=conversation_context,
+        context_header="Prior conversation summary (use for continuity when relevant):",
     )
 
     # Stream tokens
@@ -631,23 +635,12 @@ def verify_answer(
         "verify_context_prepared",
         extra={"context_length": len(context_block)},
     )
-    context_instruction = ""
-    if conversation_context:
-        trimmed_context = " ".join(conversation_context.split())
-        if len(trimmed_context) > 800:
-            trimmed_context = trimmed_context[-800:]
-        context_instruction = (
-            "Prior conversation summary (maintain continuity where appropriate):\n"
-            f"{trimmed_context}\n\n"
-        )
-
-    prompt = (
-        "You are a fact-checking verifier. Review the draft answer against the provided context. "
-        "Remove or correct any statements that are not directly supported by the context. "
-        "Preserve the structure, formatting (headers, bullet points, lists), and level of detail from the draft. "
-        "Keep inline citations [n] only when the claim is supported by the corresponding context entry. "
-        "Do not shorten or oversimplify the answer - maintain comprehensive coverage.\n\n"
-        f"{context_instruction}User question: {query}\n\nContext:\n{context_block}\n\nDraft answer:\n{draft}\n\nVerified answer:"
+    prompt = _build_verify_prompt(
+        query=query,
+        draft=draft,
+        context_block=context_block,
+        conversation_context=conversation_context,
+        context_header="Prior conversation summary (maintain continuity where appropriate):",
     )
     logger.debug("verify_llm_call", extra={"prompt_length": len(prompt)})
     output = llm(prompt)[0]["generated_text"]

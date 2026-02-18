@@ -179,7 +179,7 @@ def get_default_rotator(api_keys: Optional[List[str]] = None) -> APIKeyRotator:
 
 
 def reset_default_rotator() -> None:
-    """Reset the default rotator (mainly for testing)."""
+    """Reset the default rotator (test utility; avoid in production flows)."""
     global _default_rotator
     with _rotator_lock:
         _default_rotator = None

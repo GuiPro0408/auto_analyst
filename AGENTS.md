@@ -14,7 +14,7 @@ Auto-Analyst is an autonomous research assistant powered by a LangGraph RAG pipe
 - **Embeddings:** sentence-transformers (`all-MiniLM-L6-v2`)
 - **Vector Store:** ChromaDB (default), FAISS (alternative)
 - **Search:** Tavily, Gemini Grounding (Google Search)
-- **UI:** Streamlit
+- **UI:** Streamlit (primary), Chainlit (alternative)
 - **Testing:** pytest
 - **Parsing:** BeautifulSoup, pdfplumber
 
@@ -570,11 +570,11 @@ pytest --cov=api --cov=tools     # With coverage
 - Ask a clarifying question before making speculative changes
 - Propose a short plan for complex refactors
 - Reference existing patterns in `tests/test_end_to_end.py` for mocking examples
-- Check `.github/instructions/*.md` for domain-specific guidelines:
-  - `clean-architecture.instructions.md` — Module boundaries and dependency rules
-  - `state-management.instructions.md` — State types and node patterns
-  - `logging.instructions.md` — Logging configuration and patterns
-  - `llm-integration.instructions.md` — LLM backends and prompts
-  - `vector-store.instructions.md` — Vector store implementations
-  - `evaluation.instructions.md` — RAG metrics and quality assessment
-  - `testing.instructions.md` — Test patterns and mocking
+- Refer to the relevant sections of this AGENTS.md for domain-specific guidelines:
+  - [Clean Architecture](#clean-architecture) — Module boundaries and dependency rules
+  - [State Management](#state-management) — State types and node patterns
+  - [Logging](#logging) — Logging configuration and patterns
+  - [LLM Integration](#llm-integration) — LLM backends and prompts
+  - [Vector Store](#vector-store) — Vector store implementations
+  - [Evaluation](#evaluation) — RAG metrics and quality assessment
+  - [Testing](#testing) — Test patterns and mocking

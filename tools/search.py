@@ -71,6 +71,7 @@ __all__ = [
 def run_search_tasks(
     tasks: List[SearchQuery],
     max_results: int = 5,
+    time_sensitive: Optional[bool] = None,
     run_id: Optional[str] = None,
 ) -> Tuple[List[SearchResult], List[str]]:
     """Run searches across configured free providers.
@@ -78,6 +79,7 @@ def run_search_tasks(
     Args:
         tasks: List of SearchQuery objects to execute.
         max_results: Maximum results per task.
+        time_sensitive: Optional precomputed time-sensitivity flag.
         run_id: Optional run ID for logging correlation.
 
     Returns:
@@ -94,7 +96,16 @@ def run_search_tasks(
     )
     all_results: List[SearchResult] = []
     warnings: List[str] = []
-    time_sensitive = any(detect_time_sensitive(t.text)[0] for t in tasks)
+    computed_time_sensitive = any(detect_time_sensitive(t.text)[0] for t in tasks)
+    effective_time_sensitive = computed_time_sensitive
+    if time_sensitive is not None and time_sensitive != computed_time_sensitive:
+        logger.debug(
+            "search_time_sensitive_mismatch",
+            extra={
+                "provided": time_sensitive,
+                "computed": computed_time_sensitive,
+            },
+        )
     backend_names = [
         backend.strip().lower() for backend in SEARCH_BACKENDS if backend.strip()
     ]
@@ -110,7 +121,7 @@ def run_search_tasks(
         attempted_backends.add(backend.name)
 
     # Always include Gemini grounding for time-sensitive queries even if not configured
-    if time_sensitive and SOURCE_GEMINI_GROUNDING not in attempted_backends:
+    if effective_time_sensitive and SOURCE_GEMINI_GROUNDING not in attempted_backends:
         gemini_backend = get_backend(SOURCE_GEMINI_GROUNDING)
         if gemini_backend:
             backend_instances.append(gemini_backend)

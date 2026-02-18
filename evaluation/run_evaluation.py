@@ -7,7 +7,8 @@ from pathlib import Path
 from typing import List
 
 ROOT = Path(__file__).resolve().parent.parent
-if str(ROOT) not in sys.path:  # Ensure local package imports work when run as a script
+# Ensure local package imports work when run as a script (execution shim)
+if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from evaluation.metrics import evaluate_all

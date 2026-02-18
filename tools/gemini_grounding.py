@@ -6,7 +6,7 @@ See: https://ai.google.dev/gemini-api/docs/google-search
 
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, List, Optional
 
 from api.config import GEMINI_API_KEYS, GEMINI_MODEL, GROUNDING_RETRY_DELAY
 from api.key_rotator import APIKeyRotator, get_default_rotator
@@ -364,41 +364,3 @@ def query_with_grounding(
     )
 
 
-def grounding_sources_to_chunks(
-    sources: List[GroundingSource],
-    run_id: Optional[str] = None,
-) -> List[Dict[str, Any]]:
-    """Convert grounding sources to chunk-compatible dicts for the pipeline.
-
-    Args:
-        sources: List of GroundingSource from grounding result.
-        run_id: Optional run ID for logging.
-
-    Returns:
-        List of dicts compatible with Chunk dataclass construction.
-    """
-    logger = get_logger(__name__, run_id=run_id)
-    chunks = []
-
-    for idx, source in enumerate(sources):
-        chunk_id = f"grounding_{idx}_{hash(source.url) % 10000}"
-        text = source.title if source.title else source.url
-
-        chunks.append(
-            {
-                "id": chunk_id,
-                "text": text,
-                "metadata": {
-                    "url": source.url,
-                    "title": source.title or "Web Source",
-                    "source": "gemini_grounding",
-                    "media_type": "text",
-                },
-            }
-        )
-
-    logger.debug(
-        "grounding_chunks_created",
-        extra={"chunks_count": len(chunks)},
-    )
-    return chunks

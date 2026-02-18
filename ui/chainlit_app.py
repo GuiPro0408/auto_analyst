@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, Generator, List
 from urllib.parse import urlparse
 
-# Add project root to path for imports
+# Add project root to path for imports (script execution shim)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import chainlit as cl  # type: ignore[import-not-found]
